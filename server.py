@@ -266,7 +266,7 @@ def _nii_nvols(nii_path: Path):
 def _task_name(desc: str) -> str:
     if "rest" in desc:
         return "rest"
-    m = re.search(r"task[_\-]?([a-z0-9]+)", desc)
+    m = re.search(r"task[ _\-]?([a-z0-9]+)", desc)
     if m:
         return m.group(1)
     for name in ("nback", "faces", "gambling", "language", "motor",
@@ -296,6 +296,10 @@ def classify_series(meta: dict, has_bval: bool, n_vols):
     itype = [str(x).upper() for x in _as_list(meta.get("ImageType"))]
     desc  = " ".join(str(meta.get(k, "")) for k in
                      ("SeriesDescription", "ProtocolName", "SequenceName")).lower()
+    # Normalised copy: collapse underscores/hyphens/etc. to spaces so \b word
+    # boundaries work on scanner names like "t2_tse_cor" ('_' is a \w char, so
+    # \bt2\b never matches the raw string). Substring junk checks stay on `desc`.
+    desc_n = re.sub(r"[^a-z0-9]+", " ", desc)
     is_deriv = "DERIVED" in itype
 
     # ── always-drop "junk": localizers / screenshots / derived parametric maps
@@ -308,16 +312,16 @@ def classify_series(meta: dict, has_bval: bool, n_vols):
         return {"skip": "localizer", "junk": True}
 
     # ── diffusion ────────────────────────────────────────────────────────────
-    if has_bval or "DIFFUSION" in itype or _re_any(desc, r"\bdwi\b", r"\bdti\b",
-                                                    r"diffusion", r"\bhardi\b"):
+    if has_bval or "DIFFUSION" in itype or _re_any(desc_n, r"\bdwi\b", r"\bdti\b",
+                                                    r"\bdiff\b", r"diffusion", r"\bhardi\b"):
         if is_deriv:
             return {"skip": "derived diffusion map", "junk": True}
         return {"datatype": "dwi", "suffix": "dwi", "entities": {}}
 
     # ── field maps ───────────────────────────────────────────────────────────
-    if _re_any(desc, r"field.?map", r"\bfmap\b", r"gre.?field", r"\bb0\b",
-               r"distortion", r"topup", r"pepolar", r"se.?epi"):
-        if _re_any(desc, r"se.?epi", r"pepolar", r"topup", r"distortion") and \
+    if _re_any(desc_n, r"field ?map", r"\bfmap\b", r"gre ?field", r"\bb0\b",
+               r"distortion", r"topup", r"pepolar", r"se ?epi"):
+        if _re_any(desc_n, r"se ?epi", r"pepolar", r"topup", r"distortion") and \
            (n_vols is None or n_vols <= 10):
             return {"datatype": "fmap", "suffix": "epi", "entities": _pe_dir(meta)}
         if "PHASE" in itype or "P" in itype:
@@ -325,24 +329,29 @@ def classify_series(meta: dict, has_bval: bool, n_vols):
         return {"datatype": "fmap", "suffix": "magnitude", "entities": {}}
 
     # ── functional ───────────────────────────────────────────────────────────
-    if _re_any(desc, r"\bbold\b", r"\bfmri\b", r"resting", r"\brest\b",
-               r"\btask\b", r"ep2d.?bold", r"\bfunc\b") and (n_vols is None or n_vols > 1):
-        task = _task_name(desc)
+    if _re_any(desc_n, r"\bbold\b", r"\bfmri\b", r"resting", r"\brest\b",
+               r"\btask\b", r"ep2d ?bold", r"\bfunc\b") and (n_vols is None or n_vols > 1):
+        task = _task_name(desc_n)
         return {"datatype": "func", "suffix": "bold",
                 "entities": {"task": task}, "sidecar": {"TaskName": task}}
-    if _re_any(desc, r"sbref", r"single.?band"):
+    if _re_any(desc_n, r"sbref", r"single ?band"):
         return {"datatype": "func", "suffix": "sbref",
-                "entities": {"task": _task_name(desc)}}
+                "entities": {"task": _task_name(desc_n)}}
 
     # ── anatomical ───────────────────────────────────────────────────────────
-    if _re_any(desc, r"flair"):
+    # FLAIR first — incl. Siemens TIRM "dark-fluid" (a T2-FLAIR, named with 't2').
+    if _re_any(desc_n, r"\bflair\b") or "dark fluid" in desc_n:
         return {"datatype": "anat", "suffix": "FLAIR", "entities": {}}
-    if _re_any(desc, r"\bt2w?\b", r"\bspace\b", r"\bcube\b", r"\btse\b") \
-       and not _re_any(desc, r"t2star", r"t2\*"):
-        return {"datatype": "anat", "suffix": "T2w", "entities": {}}
-    if _re_any(desc, r"mprage", r"mp.?rage", r"memprage", r"\bt1w?\b",
-               r"bravo", r"fspgr", r"\bspgr\b", r"\btfl\b", r"\bmpr\b"):
+    # Decide T1 vs T2 from the explicit modality token (NOT 'tse', which both
+    # T1 and T2 spin-echo scans share) plus vendor 3D sequence names.
+    t1 = _re_any(desc_n, r"\bt1\b", r"\bt1w\b", r"mprage", r"mp ?rage", r"memprage",
+                 r"bravo", r"fspgr", r"\bspgr\b", r"\btfl\b", r"\bmpr\b")
+    t2star = "t2*" in desc or _re_any(desc_n, r"t2 ?star")
+    t2 = (not t2star) and _re_any(desc_n, r"\bt2\b", r"\bt2w\b", r"\bspace\b", r"\bcube\b")
+    if t1 and not t2:
         return {"datatype": "anat", "suffix": "T1w", "entities": {}}
+    if t2 and not t1:
+        return {"datatype": "anat", "suffix": "T2w", "entities": {}}
     # MPRAGE-like even when oddly named: 3D inversion-recovery with a short TE
     if str(meta.get("MRAcquisitionType", "")).upper() == "3D" and \
        meta.get("InversionTime") and (meta.get("EchoTime") or 99) < 10:
@@ -355,10 +364,15 @@ def classify_series(meta: dict, has_bval: bool, n_vols):
             "junk": False}
 
 
-def _run_cmd(cmd: list, label: str):
+def _run_cmd(cmd: list, label: str, timeout=None):
     """Run a subprocess, log truncated output, return (returncode, combined log)."""
     log.info("CMD: %s", " ".join(cmd))
-    r = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           env=os.environ.copy(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log.warning("%s timed out after %ss", label, timeout)
+        return 124, f"$ {' '.join(cmd)}\n(timed out after {timeout}s)"
     if r.stdout.strip():
         log.info("%s stdout: %s", label, r.stdout[-2000:])
     if r.stderr.strip():
@@ -370,6 +384,25 @@ def _custom_entities(entities: dict) -> list:
     """Turn a {task, acq, dir, run, echo} dict into dcm2bids custom_entities tokens."""
     order = ("task", "acq", "dir", "run", "echo")
     return [f"{k}-{entities[k]}" for k in order if entities.get(k) not in (None, "")]
+
+
+def _series_rank(k: dict):
+    """
+    Score a series so the 'most important' of several same-modality candidates
+    sorts first: prefer ORIGINAL/PRIMARY over DERIVED/SECONDARY, prefer 3D and
+    prescan-normalised acquisitions, then the largest image (more data / higher
+    resolution). Used to keep a single best anatomical per modality.
+    """
+    meta  = k.get("meta", {})
+    itype = [str(x).upper() for x in _as_list(meta.get("ImageType"))]
+    score = 0
+    if "ORIGINAL"  in itype: score += 100
+    if "PRIMARY"   in itype: score += 50
+    if "DERIVED"   in itype: score -= 40
+    if "SECONDARY" in itype: score -= 20
+    if "NORM"      in itype: score += 15
+    if str(meta.get("MRAcquisitionType", "")).upper() == "3D": score += 30
+    return (score, k.get("size", 0))
 
 
 def build_dcm2bids_config(helper_dir: Path, config_path: Path,
@@ -385,6 +418,7 @@ def build_dcm2bids_config(helper_dir: Path, config_path: Path,
     Returns (descriptions, kept_lines, skipped_lines).
     """
     kept, skipped_lines = [], []
+    all_desc_counts = {}                      # SeriesDescription freq across ALL series
     for js in sorted(helper_dir.glob("*.json")):
         nii = js.with_suffix(".nii.gz")
         if not nii.exists():
@@ -395,8 +429,10 @@ def build_dcm2bids_config(helper_dir: Path, config_path: Path,
             meta = json.loads(js.read_text())
         except Exception:
             meta = {}
+        desc_val = meta.get("SeriesDescription", "")
+        all_desc_counts[desc_val] = all_desc_counts.get(desc_val, 0) + 1
         decision = classify_series(meta, js.with_suffix(".bval").exists(), _nii_nvols(nii))
-        label = meta.get("SeriesDescription") or js.stem
+        label = desc_val or js.stem
         if "skip" in decision and decision.get("junk"):
             skipped_lines.append(f"  [-] {label}  ({decision['skip']})")
             continue
@@ -407,31 +443,44 @@ def build_dcm2bids_config(helper_dir: Path, config_path: Path,
             entities = dict(decision.get("entities", {}))
             sidecar = decision.get("sidecar", {})
             fb = False
-        kept.append({"series": meta.get("SeriesNumber", 0),
-                     "desc": meta.get("SeriesDescription", ""),
+        kept.append({"series": meta.get("SeriesNumber", 0), "desc": desc_val,
                      "datatype": datatype, "suffix": suffix, "entities": entities,
-                     "sidecar": sidecar, "label": label, "fallback": fb})
+                     "sidecar": sidecar, "label": label, "fallback": fb,
+                     "meta": meta, "size": nii.stat().st_size})
 
-    # run- numbering for repeated acquisitions of the same type
+    # group by modality signature
     groups = {}
     for k in kept:
         gkey = (k["datatype"], k["suffix"], k["entities"].get("task"),
                 k["entities"].get("dir"), k["entities"].get("acq"))
         groups.setdefault(gkey, []).append(k)
-    for members in groups.values():
-        if len(members) > 1:
-            for i, k in enumerate(sorted(members, key=lambda x: x["series"]), 1):
-                k["entities"]["run"] = i
 
-    # one description per series, with criteria that match exactly one series
-    desc_counts = {}
-    for k in kept:
-        desc_counts[k["desc"]] = desc_counts.get(k["desc"], 0) + 1
+    # ANATOMICAL: keep only the single best series per modality — a NORM/non-NORM
+    # copy of one MPRAGE, or repeats, collapse to ONE T1w (the most important one),
+    # not run-1/run-2. func/dwi/fmap acquisitions are legitimately distinct, so
+    # keep them all and number them run-1, run-2, …
+    selected = []
+    for members in groups.values():
+        if members[0]["datatype"] == "anat" and len(members) > 1:
+            members.sort(key=_series_rank, reverse=True)
+            best = members[0]
+            selected.append(best)
+            for m in members[1:]:
+                skipped_lines.append(
+                    f"  [-] {m['label']}  (duplicate {m['datatype']}/{m['suffix']} — "
+                    f"kept the best one: {best['label']})")
+        else:
+            if len(members) > 1:
+                for i, m in enumerate(sorted(members, key=lambda x: x["series"]), 1):
+                    m["entities"]["run"] = i
+            selected.extend(members)
+
+    # one description per selected series. Use SeriesDescription as criteria only
+    # if it is GLOBALLY unique (so dcm2bids can't also grab a dropped duplicate
+    # that shares the name); otherwise the always-unique SeriesNumber.
     descriptions, kept_lines = [], []
-    for k in kept:
-        # prefer a unique, non-empty SeriesDescription; else the always-unique
-        # SeriesNumber — so dcm2bids never maps one series to two descriptions.
-        if k["desc"] and desc_counts[k["desc"]] == 1:
+    for k in sorted(selected, key=lambda x: x["series"]):
+        if k["desc"] and all_desc_counts.get(k["desc"], 0) == 1:
             criteria = {"SeriesDescription": k["desc"]}
         else:
             criteria = {"SeriesNumber": k["series"]}
@@ -469,7 +518,8 @@ def _validate_bids(bids_out: Path, subj_id: str) -> str:
     validator = shutil.which("bids-validator")
     if validator:
         try:
-            rc, out = _run_cmd([validator, str(bids_out)], "bids-validator")
+            # Hard time-bound so a slow/hanging validator can never stall a job.
+            rc, out = _run_cmd([validator, str(bids_out)], "bids-validator", timeout=120)
             lines.append(f"  bids-validator exit={rc} (informational only):")
             lines.append(out[-1500:])
         except Exception as e:
