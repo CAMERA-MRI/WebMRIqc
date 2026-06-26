@@ -551,22 +551,24 @@ function HtmlFrame({ content, svgBlobMap, title }) {
 
 // ── Main exported component ───────────────────────────────────────────────────
 
-export default function MriqcReport({ jsonMetrics, htmlFiles, svgFigures }) {
-  const [subjectIdx, setSubjectIdx] = useState(0)
-  const [openHtml,   setOpenHtml]   = useState(null)
+function suffixFromPath(p) {
+  const mm = p?.match(/_([A-Za-z0-9]+)\.json$/)
+  return mm ? mm[1] : null
+}
 
-  // Auto-open first HTML report
-  useEffect(() => {
-    if (htmlFiles?.length > 0) setOpenHtml(htmlFiles[0].path)
-  }, [htmlFiles])
-
-  const subject  = jsonMetrics?.[subjectIdx]
-  const m        = subject?.metrics ?? {}
-  const meta     = m.bids_meta ?? {}
+// One full metric section for a SINGLE image (modality). Rendered once per
+// jsonMetrics entry, so e.g. T1w and T2w appear together — each with its own
+// header, IQM cards, charts and figures — instead of replacing one another.
+function SubjectReport({ subject, svgFigures, svgBlobMap }) {
+  const m      = subject?.metrics ?? {}
+  const meta   = m.bids_meta ?? {}
+  const suffix = suffixFromPath(subject?.path)
 
   const isBold   = m.tsnr !== undefined
   const defs     = isBold ? BOLD_DEFS : ANAT_DEFS
-  const modLabel = meta.modality ?? (isBold ? 'BOLD' : 'T1w')
+  // Derive the modality from the filename (sub-01_T2w.json) so a T2w is never
+  // mislabelled as T1w; fall back to the sidecar field / BOLD heuristic.
+  const modLabel = meta.modality ?? suffix ?? (isBold ? 'BOLD' : 'T1w')
 
   const rawField = Number(meta.MagneticFieldStrength)
   const fieldT   = !isNaN(rawField) && rawField > 0
@@ -612,9 +614,169 @@ export default function MriqcReport({ jsonMetrics, htmlFiles, svgFigures }) {
     { label: 'SAR',             value: meta.SAR != null ? meta.SAR.toFixed(2) : null },
   ].filter(r => r.value != null)
 
+  // ── Figures for THIS image — filter by subject AND modality so the T1w
+  // section shows only T1w figures (not the T2w ones for the same subject).
+  const subjectFigs = useMemo(() => {
+    if (!svgFigures?.length || !subId || subId === '?') return []
+    const prefix = `sub-${subId}/`
+    return svgFigures
+      .filter(f => f.path.startsWith(prefix))
+      .filter(f => !sesId || f.path.includes(`_ses-${sesId}_`) || f.path.includes(`ses-${sesId}/`))
+      .filter(f => !suffix || f.path.includes(`_${suffix}_`) || f.path.includes(`_${suffix}.`))
+      .map(f => {
+        const desc = descOf(f.path)
+        const def  = FIG_DEFS.find(d => d.desc === desc) ?? { label: desc ?? f.path.split('/').pop(), caption: '' }
+        return { ...f, desc, label: def.label, caption: def.caption, order: FIG_ORDER[desc] ?? 99 }
+      })
+      .sort((a, b) => a.order - b.order)
+  }, [svgFigures, subId, sesId, suffix])
+
+  if (!subject) return null
+
+  return (
+    <div className={s.subjectSection}>
+      {/* ── Header ─────────────────────────────────────────────────── */}
+      <div className={s.dashHead}>
+        <div className={s.dashLeft}>
+          <span className={s.subjectLabel}>sub-{subId}</span>
+          {sesId && <span className={s.badge}>{sesId}</span>}
+          <span className={s.badge} style={{ color: 'var(--teal)', background: 'var(--teal-dim)' }}>{modLabel}</span>
+        </div>
+        <div className={s.dashRight}>
+          {scanner && <span className={s.scannerName}>{scanner}</span>}
+          {fieldT  && <span className={s.fieldBadge}>{fieldT}</span>}
+          {m.provenance?.version && (
+            <span className={s.mriqcVersion}>MRIQC v{m.provenance.version}</span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Warnings ───────────────────────────────────────────────── */}
+      {warnings.length > 0 && (
+        <div className={s.warnRow}>
+          {warnings.map((w, i) => (
+            <div key={i} className={s.warnChip}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+              {w}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── IQM metric cards ────────────────────────────────────────── */}
+      <div className={s.metricsGrid}>
+        {defs.map(def => (
+          <MetricCard key={def.key} def={def} value={m[def.key]} />
+        ))}
+      </div>
+
+      {/* ── Tissue composition + SNR charts (anat only) ─────────────── */}
+      {!isBold && (m.icvs_gm != null || m.snr_gm != null) && (
+        <>
+          <SectionTitle icon={
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+            </svg>
+          }>
+            Tissue Analysis
+          </SectionTitle>
+          <div className={s.chartsRow}>
+            {m.icvs_gm != null && (
+              <div className={s.chartBox}>
+                <div className={s.chartTitle}>Volume Fractions (% ICV)</div>
+                {tissues.map(t => m[t.key] != null && (
+                  <HBar key={t.key}
+                    label={t.label}
+                    value={(m[t.key]) * 100}
+                    pct={(m[t.key] / maxTissue) * 100}
+                    color={t.color}
+                    decimals={1} unit="%" />
+                ))}
+                <div className={s.chartNote}>CSF / Grey Matter / White Matter as % of ICV</div>
+              </div>
+            )}
+            {m.snr_gm != null && (
+              <div className={s.chartBox}>
+                <div className={s.chartTitle}>SNR by Tissue</div>
+                {snrTissues.map(t => m[t.key] != null && (
+                  <HBar key={t.key}
+                    label={t.label}
+                    value={m[t.key]}
+                    pct={(m[t.key] / maxSnr) * 100}
+                    color={t.color}
+                    decimals={1} />
+                ))}
+                <div className={s.chartNote}>Signal-to-noise per tissue class</div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ── Acquisition parameters ──────────────────────────────────── */}
+      {acqRows.length > 0 && (
+        <>
+          <SectionTitle icon={
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
+            </svg>
+          }>
+            Acquisition Parameters
+          </SectionTitle>
+          <div className={s.acqGrid}>
+            {acqRows.map(({ label, value }) => (
+              <div key={label} className={s.acqCell}>
+                <span className={s.acqLabel}>{label}</span>
+                <span className={s.acqValue}>{value}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ── Brain figures (inline SVG gallery) ──────────────────────── */}
+      {subjectFigs.length > 0 && (
+        <>
+          <SectionTitle icon={
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+          }>
+            Brain Figures
+          </SectionTitle>
+          <div className={s.figGrid}>
+            {subjectFigs.map(fig => (
+              <FigureCard
+                key={fig.path}
+                label={fig.label}
+                caption={fig.caption}
+                blobUrl={svgBlobMap[fig.path]}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+export default function MriqcReport({ jsonMetrics, htmlFiles, svgFigures }) {
+  const [openHtml, setOpenHtml] = useState(null)
+
+  // Auto-open first HTML report
+  useEffect(() => {
+    if (htmlFiles?.length > 0) setOpenHtml(htmlFiles[0].path)
+  }, [htmlFiles])
+
   // ── SVG blob URL map ────────────────────────────────────────────────────────
-  // Create one blob URL per SVG figure and clean them up on unmount / update.
-  // The map is also passed to HtmlFrame so the iframe can resolve the images.
+  // One blob URL per SVG figure (shared by every SubjectReport + the iframes),
+  // cleaned up on unmount / update.
   const [svgBlobMap, setSvgBlobMap] = useState({})
 
   useEffect(() => {
@@ -628,204 +790,51 @@ export default function MriqcReport({ jsonMetrics, htmlFiles, svgFigures }) {
     return () => Object.values(map).forEach(u => URL.revokeObjectURL(u))
   }, [svgFigures])
 
-  // ── Figures for the selected subject ───────────────────────────────────────
-  // Filter to this subject's SVGs, then sort by canonical FIG_ORDER.
-  const subjectFigs = useMemo(() => {
-    if (!svgFigures?.length || !subId || subId === '?') return []
-    const prefix = `sub-${subId}/`
-    return svgFigures
-      .filter(f => f.path.startsWith(prefix))
-      // If a session is selected, only show that session's figures
-      .filter(f => !sesId || f.path.includes(`_ses-${sesId}_`) || f.path.includes(`ses-${sesId}/`))
-      .map(f => {
-        const desc = descOf(f.path)
-        const def  = FIG_DEFS.find(d => d.desc === desc) ?? { label: desc ?? f.path.split('/').pop(), caption: '' }
-        return { ...f, desc, label: def.label, caption: def.caption, order: FIG_ORDER[desc] ?? 99 }
-      })
-      .sort((a, b) => a.order - b.order)
-  }, [svgFigures, subId, sesId])
-
-  if (!subject && (!htmlFiles || htmlFiles.length === 0)) return null
+  const hasMetrics = jsonMetrics && jsonMetrics.length > 0
+  if (!hasMetrics && (!htmlFiles || htmlFiles.length === 0)) return null
 
   return (
     <div className={s.dash}>
 
-      {/* ── Subject selector (when > 1 subject) ─────────────────────────── */}
-      {jsonMetrics && jsonMetrics.length > 1 && (
-        <div className={s.subjectPicker}>
-          {jsonMetrics.map((j, i) => {
-            const name = j.path.split('/').pop().replace('.json', '')
-            return (
-              <button key={i}
-                className={`${s.subBtn} ${i === subjectIdx ? s.subBtnActive : ''}`}
-                onClick={() => setSubjectIdx(i)}>
-                {name}
-              </button>
-            )
-          })}
+      {/* ── IQM header + CSV export (covers every modality at once) ──────── */}
+      {hasMetrics && (
+        <div className={s.sectionRow}>
+          <SectionTitle icon={
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+          }>
+            Image Quality Metrics{jsonMetrics.length > 1 ? ` · ${jsonMetrics.length} images` : ''}
+          </SectionTitle>
+          <button
+            className={s.exportBtn}
+            onClick={() => {
+              const csv  = buildMetricsCsv(jsonMetrics)
+              const name = jsonMetrics.length > 1
+                ? `mriqc_iqms_${jsonMetrics.length}images.csv`
+                : `mriqc_iqms_${jsonMetrics[0].path.split('/').pop().replace('.json', '')}.csv`
+              downloadCsv(csv, name)
+            }}
+            title="Download every computed IQM for all images as a CSV spreadsheet"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export CSV
+          </button>
         </div>
       )}
 
-      {subject && (
-        <>
-          {/* ── Header ─────────────────────────────────────────────────── */}
-          <div className={s.dashHead}>
-            <div className={s.dashLeft}>
-              <span className={s.subjectLabel}>sub-{subId}</span>
-              {sesId && <span className={s.badge}>{sesId}</span>}
-              <span className={s.badge} style={{ color: 'var(--teal)', background: 'var(--teal-dim)' }}>{modLabel}</span>
-            </div>
-            <div className={s.dashRight}>
-              {scanner && <span className={s.scannerName}>{scanner}</span>}
-              {fieldT  && <span className={s.fieldBadge}>{fieldT}</span>}
-              {m.provenance?.version && (
-                <span className={s.mriqcVersion}>MRIQC v{m.provenance.version}</span>
-              )}
-            </div>
-          </div>
-
-          {/* ── Warnings ───────────────────────────────────────────────── */}
-          {warnings.length > 0 && (
-            <div className={s.warnRow}>
-              {warnings.map((w, i) => (
-                <div key={i} className={s.warnChip}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                  </svg>
-                  {w}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ── IQM metric cards ────────────────────────────────────────── */}
-          <div className={s.sectionRow}>
-            <SectionTitle icon={
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-              </svg>
-            }>
-              Image Quality Metrics
-            </SectionTitle>
-            <button
-              className={s.exportBtn}
-              onClick={() => {
-                const csv  = buildMetricsCsv(jsonMetrics)
-                const name = jsonMetrics.length > 1
-                  ? `mriqc_iqms_${jsonMetrics.length}subjects.csv`
-                  : `mriqc_iqms_sub-${subId}.csv`
-                downloadCsv(csv, name)
-              }}
-              title="Download every computed IQM for all subjects as a CSV spreadsheet"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              Export CSV
-            </button>
-          </div>
-          <div className={s.metricsGrid}>
-            {defs.map(def => (
-              <MetricCard key={def.key} def={def} value={m[def.key]} />
-            ))}
-          </div>
-
-          {/* ── Tissue composition + SNR charts (anat only) ─────────────── */}
-          {!isBold && (m.icvs_gm != null || m.snr_gm != null) && (
-            <>
-              <SectionTitle icon={
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                </svg>
-              }>
-                Tissue Analysis
-              </SectionTitle>
-              <div className={s.chartsRow}>
-                {m.icvs_gm != null && (
-                  <div className={s.chartBox}>
-                    <div className={s.chartTitle}>Volume Fractions (% ICV)</div>
-                    {tissues.map(t => m[t.key] != null && (
-                      <HBar key={t.key}
-                        label={t.label}
-                        value={(m[t.key]) * 100}
-                        pct={(m[t.key] / maxTissue) * 100}
-                        color={t.color}
-                        decimals={1} unit="%" />
-                    ))}
-                    <div className={s.chartNote}>CSF / Grey Matter / White Matter as % of ICV</div>
-                  </div>
-                )}
-                {m.snr_gm != null && (
-                  <div className={s.chartBox}>
-                    <div className={s.chartTitle}>SNR by Tissue</div>
-                    {snrTissues.map(t => m[t.key] != null && (
-                      <HBar key={t.key}
-                        label={t.label}
-                        value={m[t.key]}
-                        pct={(m[t.key] / maxSnr) * 100}
-                        color={t.color}
-                        decimals={1} />
-                    ))}
-                    <div className={s.chartNote}>Signal-to-noise per tissue class</div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-
-          {/* ── Acquisition parameters ──────────────────────────────────── */}
-          {acqRows.length > 0 && (
-            <>
-              <SectionTitle icon={
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="3"/>
-                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
-                </svg>
-              }>
-                Acquisition Parameters
-              </SectionTitle>
-              <div className={s.acqGrid}>
-                {acqRows.map(({ label, value }) => (
-                  <div key={label} className={s.acqCell}>
-                    <span className={s.acqLabel}>{label}</span>
-                    <span className={s.acqValue}>{value}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-
-          {/* ── Brain figures (inline SVG gallery) ──────────────────────── */}
-          {subjectFigs.length > 0 && (
-            <>
-              <SectionTitle icon={
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                  <circle cx="8.5" cy="8.5" r="1.5"/>
-                  <polyline points="21 15 16 10 5 21"/>
-                </svg>
-              }>
-                Brain Figures
-              </SectionTitle>
-              <p className={s.htmlNote}>
-                Click any panel to expand the brain visualisation. These are the same images shown in the full MRIQC report below.
-              </p>
-              <div className={s.figGrid}>
-                {subjectFigs.map(fig => (
-                  <FigureCard
-                    key={fig.path}
-                    label={fig.label}
-                    caption={fig.caption}
-                    blobUrl={svgBlobMap[fig.path]}
-                  />
-                ))}
-              </div>
-            </>
-          )}
-        </>
-      )}
+      {/* ── One section per image — T1w, T2w, … all shown together ───────── */}
+      {jsonMetrics?.map(subject => (
+        <SubjectReport
+          key={subject.path}
+          subject={subject}
+          svgFigures={svgFigures}
+          svgBlobMap={svgBlobMap}
+        />
+      ))}
 
       {/* ── MRIQC HTML visual reports (full iframe) ──────────────────────── */}
       {htmlFiles && htmlFiles.length > 0 && (

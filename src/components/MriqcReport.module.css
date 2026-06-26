@@ -6,6 +6,19 @@
   gap: 20px;
 }
 
+/* ── Per-image section (one per modality: T1w, T2w, …) ───────────────────────── */
+.subjectSection {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+/* Divider between stacked modality sections (not before the first one) */
+.subjectSection + .subjectSection {
+  margin-top: 8px;
+  padding-top: 28px;
+  border-top: 1px solid var(--border-2);
+}
+
 /* ── Subject picker ────────────────────────────────────────────────────────── */
 .subjectPicker {
   display: flex;
