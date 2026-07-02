@@ -36,7 +36,7 @@ export default function Register() {
     setBusy(true)
     try {
       await register(form)
-      navigate('/submissions')
+      navigate('/analyze')
     } catch (err) {
       setError(err.message)
     } finally {

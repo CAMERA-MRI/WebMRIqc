@@ -724,6 +724,11 @@ async def convert_dicom(
     modality:          str = Form("T1w"),   # fallback suffix for de-identified scans
     authorization:    str = Header(None),
 ):
+    # An account is required to use the platform — reject unauthenticated requests.
+    user = _user_from_header(authorization)
+    if not user:
+        raise HTTPException(401, "Please sign in to run an analysis.")
+
     participant_label = participant_label.strip()
     if not participant_label or not participant_label.replace("-", "").replace("_", "").isalnum():
         raise HTTPException(400, "Participant label must be alphanumeric")
@@ -738,9 +743,8 @@ async def convert_dicom(
     work_dir = WORK_ROOT / job_id
     work_dir.mkdir(parents=True)
 
-    # Track this submission if the request is from a logged-in user (no-op for guests)
-    _record_submission(_user_from_header(authorization), job_id, "dicom",
-                       f"DICOM→BIDS · sub-{participant_label}")
+    # Attribute this submission to the signed-in user.
+    _record_submission(user, job_id, "dicom", f"DICOM→BIDS · sub-{participant_label}")
 
     # Save upload synchronously (this is fast — it's just writing bytes)
     try:
@@ -848,6 +852,11 @@ async def run_mriqc_endpoint(
     if not MRIQC_BIN:
         raise HTTPException(503, "mriqc is not installed in this environment")
 
+    # An account is required to use the platform — reject unauthenticated requests.
+    user = _user_from_header(authorization)
+    if not user:
+        raise HTTPException(401, "Please sign in to run an analysis.")
+
     job_id   = str(uuid.uuid4())[:8]
     work_dir = WORK_ROOT / f"mriqc_{job_id}"
     work_dir.mkdir(parents=True)
@@ -866,9 +875,9 @@ async def run_mriqc_endpoint(
     # Don't touch the "running" sentinel yet — the job may be queued first.
     job_create(job_id, running=False)
 
-    # Track this submission if the request is from a logged-in user (no-op for guests)
+    # Attribute this submission to the signed-in user.
     _mods = modalities.strip() or "T1w"
-    _record_submission(_user_from_header(authorization), job_id, "mriqc",
+    _record_submission(user, job_id, "mriqc",
                        f"MRIQC · {_mods}" + (f" · sub-{participant_label}" if participant_label else ""))
 
     def _run():

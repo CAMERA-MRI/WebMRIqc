@@ -99,8 +99,8 @@ export default function Navbar() {
               <Link to="/login" className={s.authLink} onClick={() => setMenuOpen(false)}>Sign in</Link>
             )}
 
-            <Link to="/analyze" className="btn-primary" style={{ padding: '10px 22px', fontSize: '0.88rem' }}>
-              Launch App
+            <Link to={user ? '/analyze' : '/login'} className="btn-primary" style={{ padding: '10px 22px', fontSize: '0.88rem' }} onClick={() => setMenuOpen(false)}>
+              {user ? 'Launch App' : 'Sign in to Launch'}
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M5 12h14M12 5l7 7-7 7"/>
               </svg>

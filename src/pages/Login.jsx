@@ -20,7 +20,7 @@ export default function Login() {
   const { login } = useAuth()
   const navigate  = useNavigate()
   const location  = useLocation()
-  const dest      = location.state?.from || '/submissions'
+  const dest      = location.state?.from || '/analyze'
 
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
@@ -74,9 +74,6 @@ export default function Login() {
 
         <p className={s.footer}>
           No account? <Link to="/register" className={s.footerLink}>Create one</Link>
-        </p>
-        <p className={s.guestNote}>
-          You can also <Link to="/analyze" className={s.guestLink}>continue as a guest</Link> — no account needed to run MRIQC.
         </p>
       </div>
     </div>

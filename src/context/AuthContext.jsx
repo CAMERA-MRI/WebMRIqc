@@ -1,10 +1,11 @@
 /**
- * AuthContext — optional user accounts for WebMRIQC.
+ * AuthContext — user accounts for WebMRIQC.
  *
- * Guests use the app fully without an account. When a user logs in, their
- * JWT is stored in localStorage (under the same key api.js reads) so that
- * MRIQC / DICOM submissions are automatically attributed to them and appear
- * on the "My Submissions" dashboard.
+ * An account is required to use the platform: the analysis routes are gated
+ * by <RequireAuth>, and the backend rejects unauthenticated job submissions.
+ * On login the JWT is stored in localStorage (the key api.js reads) so every
+ * MRIQC / DICOM submission is attributed to the user and appears on the
+ * "My Submissions" dashboard.
  */
 
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
