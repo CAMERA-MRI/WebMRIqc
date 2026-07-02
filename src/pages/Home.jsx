@@ -12,22 +12,6 @@ function BrainVisual() {
       {/* 3-D rotating brain model */}
       <BrainModel className={s.brainSvg} />
 
-      {/* Static overlay: corner markers + scanner metadata */}
-      <svg
-        viewBox="0 0 360 360"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
-      >
-        <path d="M28,28 L43,28 M28,28 L28,43" stroke="rgba(0,200,180,0.5)" strokeWidth="1.5" strokeLinecap="round" />
-        <path d="M332,28 L317,28 M332,28 L332,43" stroke="rgba(0,200,180,0.5)" strokeWidth="1.5" strokeLinecap="round" />
-        <path d="M28,332 L43,332 M28,332 L28,317" stroke="rgba(0,200,180,0.5)" strokeWidth="1.5" strokeLinecap="round" />
-        <path d="M332,332 L317,332 M332,332 L332,317" stroke="rgba(0,200,180,0.5)" strokeWidth="1.5" strokeLinecap="round" />
-        <text x="33" y="46" fill="rgba(0,200,180,0.55)" fontSize="8" fontFamily="'JetBrains Mono', monospace">3T AXIAL T1w</text>
-        <text x="33" y="340" fill="rgba(0,200,180,0.45)" fontSize="7.5" fontFamily="'JetBrains Mono', monospace">TR:2000 TE:2.5ms</text>
-        <text x="234" y="340" fill="rgba(0,200,180,0.45)" fontSize="7.5" fontFamily="'JetBrains Mono', monospace">FOV:256 1mm ISO</text>
-      </svg>
-
       {/* Floating metric badges */}
       <div className={`${s.badge} ${s.badge1}`}>
         <span className={s.badgeLabel}>CNR</span>
@@ -49,9 +33,6 @@ function BrainVisual() {
         <span className={s.badgeVal}>0.52</span>
         <span className={s.badgeMed}>● Moderate</span>
       </div>
-
-      {/* Scan line animation */}
-      <div className={s.scanLine} />
     </div>
   )
 }
