@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import s from './Home.module.css'
 import BrainModel from '../components/BrainModel'
+import { fetchImpact } from '../lib/api'
 
 // ─── Brain 3D Visualization ────────────────────────────────────────────────
 function BrainVisual() {
@@ -131,6 +132,88 @@ function StatsBar() {
         ))}
       </div>
     </div>
+  )
+}
+
+// ─── Live impact tally ───────────────────────────────────────────────────────
+// Counts up from 0 once the value is known and the band scrolls into view.
+function useCountUp(target, run, dur = 1500) {
+  const [n, setN] = useState(0)
+  useEffect(() => {
+    if (!run) return
+    if (target <= 0) { setN(0); return }
+    let raf, start
+    const tick = (t) => {
+      if (!start) start = t
+      const p = Math.min(1, (t - start) / dur)
+      setN(Math.round(target * (1 - Math.pow(1 - p, 3))))   // ease-out cubic
+      if (p < 1) raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [target, run, dur])
+  return n
+}
+
+// 2-letter ISO code → flag emoji (falls back to the code itself on Windows)
+const flag = (cc) =>
+  cc.toUpperCase().replace(/./g, (c) => String.fromCodePoint(127397 + c.charCodeAt(0)))
+
+function ImpactBand() {
+  const [data, setData] = useState(null)
+  const [seen, setSeen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => { fetchImpact().then(setData).catch(() => {}) }, [])
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const io = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting) { setSeen(true); io.disconnect() }
+    }, { threshold: 0.25 })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [data])
+
+  const scans     = useCountUp(data?.scans     ?? 0, seen)
+  const countries = useCountUp(data?.countries ?? 0, seen)
+  const users     = useCountUp(data?.users     ?? 0, seen)
+
+  // Hide until stats load, and while everything is still zero (fresh deploy).
+  if (!data || (data.scans === 0 && data.countries === 0 && data.users === 0)) return null
+
+  const cells = [
+    { n: scans,     label: 'Scans quality-controlled' },
+    { n: countries, label: 'Countries reached' },
+    { n: users,     label: 'Researchers on board' },
+  ]
+
+  return (
+    <section ref={ref} className={s.impact}>
+      <div className="container">
+        <div className={s.impactHead}>
+          <span className={s.impactEyebrow}>Our growing impact</span>
+          <h2 className={s.impactTitle}>Standardized MRI QC, reaching further every day</h2>
+        </div>
+        <div className={s.impactGrid}>
+          {cells.map((c) => (
+            <div key={c.label} className={s.impactCell}>
+              <span className={s.impactNum}>{c.n.toLocaleString()}<span className={s.impactPlus}>+</span></span>
+              <span className={s.impactLabel}>{c.label}</span>
+            </div>
+          ))}
+        </div>
+        {data.country_codes?.length > 0 && (
+          <div className={s.impactFlags}>
+            {data.country_codes.slice(0, 24).map((cc) => (
+              <span key={cc} className={s.impactFlag} title={cc}>{flag(cc)}</span>
+            ))}
+            <span className={s.impactAnd}>and counting…</span>
+          </div>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -506,6 +589,7 @@ export default function Home() {
     <main>
       <HeroSection />
       <StatsBar />
+      <ImpactBand />
       <PipelineSection />
       <FeaturesSection />
       <IQMReferenceSection />

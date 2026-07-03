@@ -723,6 +723,9 @@ async def convert_dicom(
     session_id:        str = Form(""),
     modality:          str = Form("T1w"),   # fallback suffix for de-identified scans
     authorization:    str = Header(None),
+    cf_ipcountry:     str = Header(None),
+    cf_connecting_ip: str = Header(None),
+    x_forwarded_for:  str = Header(None),
 ):
     # An account is required to use the platform — reject unauthenticated requests.
     user = _user_from_header(authorization)
@@ -739,12 +742,16 @@ async def convert_dicom(
     fallback_suffix = modality.strip() if modality.strip() in (
         "T1w", "T2w", "FLAIR", "PDw", "T2starw") else "T1w"
 
+    import asyncio
+    country = await asyncio.get_event_loop().run_in_executor(
+        None, _resolve_country, cf_ipcountry, cf_connecting_ip or x_forwarded_for)
+
     job_id   = str(uuid.uuid4())[:8]
     work_dir = WORK_ROOT / job_id
     work_dir.mkdir(parents=True)
 
     # Attribute this submission to the signed-in user.
-    _record_submission(user, job_id, "dicom", f"DICOM→BIDS · sub-{participant_label}")
+    _record_submission(user, job_id, "dicom", f"DICOM→BIDS · sub-{participant_label}", country=country)
 
     # Save upload synchronously (this is fast — it's just writing bytes)
     try:
@@ -848,6 +855,9 @@ async def run_mriqc_endpoint(
     n_procs:           int = Form(36),   # 36 cores × 10 jobs = 360 of 384 CPUs
     mem_gb:            int = Form(128),  # 128 GB  × 10 jobs = 1.28 TB of 1.5 TB RAM
     authorization:     str = Header(None),
+    cf_ipcountry:      str = Header(None),   # Cloudflare edge geolocation
+    cf_connecting_ip:  str = Header(None),
+    x_forwarded_for:   str = Header(None),
 ):
     if not MRIQC_BIN:
         raise HTTPException(503, "mriqc is not installed in this environment")
@@ -856,6 +866,12 @@ async def run_mriqc_endpoint(
     user = _user_from_header(authorization)
     if not user:
         raise HTTPException(401, "Please sign in to run an analysis.")
+
+    # Resolve the visitor's country for the impact tally (off-loop so a fallback
+    # IP lookup never blocks the event loop). We store only the country, not the IP.
+    import asyncio
+    country = await asyncio.get_event_loop().run_in_executor(
+        None, _resolve_country, cf_ipcountry, cf_connecting_ip or x_forwarded_for)
 
     job_id   = str(uuid.uuid4())[:8]
     work_dir = WORK_ROOT / f"mriqc_{job_id}"
@@ -878,7 +894,8 @@ async def run_mriqc_endpoint(
     # Attribute this submission to the signed-in user.
     _mods = modalities.strip() or "T1w"
     _record_submission(user, job_id, "mriqc",
-                       f"MRIQC · {_mods}" + (f" · sub-{participant_label}" if participant_label else ""))
+                       f"MRIQC · {_mods}" + (f" · sub-{participant_label}" if participant_label else ""),
+                       country=country)
 
     def _run():
         # Mark as running only now, when the compute slot has been granted.
@@ -944,6 +961,7 @@ async def run_mriqc_endpoint(
             shutil.make_archive(str(zip_out), "zip", root_dir=out_dir)
             label = f"mriqc_{participant_label}" if participant_label else "mriqc_results"
             job_done(job_id, zip_out.with_suffix(".zip"), label)
+            _mark_completed(job_id)          # count toward the public impact tally
             shutil.rmtree(work_dir, ignore_errors=True)
             log.info("[%s] MRIQC done ✓", job_id)
 
@@ -1339,6 +1357,12 @@ def _init_db():
                 salt        TEXT NOT NULL,
                 expires_at  REAL NOT NULL
             )""")
+        # ── Migrations: add impact-tracking columns to submissions if missing ──
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(submissions)").fetchall()}
+        if "country" not in cols:
+            c.execute("ALTER TABLE submissions ADD COLUMN country TEXT")
+        if "completed" not in cols:
+            c.execute("ALTER TABLE submissions ADD COLUMN completed INTEGER DEFAULT 0")
     log.info("Auth DB ready at %s", _DB_PATH)
 
 _init_db()
@@ -1401,20 +1425,57 @@ def _user_from_header(authorization: str | None):
     with _db_lock, _db() as c:
         return c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
 
-def _record_submission(user_row, job_id: str, kind: str, label: str):
+def _record_submission(user_row, job_id: str, kind: str, label: str, country: str | None = None):
     """Best-effort: log a submission against a logged-in user (no-op for guests)."""
     if not user_row:
         return
     try:
         with _db_lock, _db() as c:
             c.execute(
-                "INSERT INTO submissions (job_id, user_id, kind, label, created_at) "
-                "VALUES (?,?,?,?,?)",
+                "INSERT INTO submissions (job_id, user_id, kind, label, created_at, country) "
+                "VALUES (?,?,?,?,?,?)",
                 (job_id, user_row["id"], kind, label,
-                 datetime.datetime.utcnow().isoformat()),
+                 datetime.datetime.utcnow().isoformat(), country),
             )
     except Exception:
         log.exception("Failed to record submission for job %s", job_id)
+
+
+def _mark_completed(job_id: str):
+    """Flag a submission as successfully QC'd — feeds the public impact tally."""
+    try:
+        with _db_lock, _db() as c:
+            c.execute("UPDATE submissions SET completed=1 WHERE job_id=?", (job_id,))
+    except Exception:
+        log.exception("Failed to mark submission completed for job %s", job_id)
+
+
+# ── Visitor country (for the impact tally) ────────────────────────────────────
+# Primary source is Cloudflare's CF-IPCountry header (edge geolocation of the
+# client IP) — accurate and privacy-friendly (we never store the IP). When not
+# behind Cloudflare, we fall back to a best-effort IP → country lookup, cached
+# per IP so we hit the external service at most once per address.
+_country_cache: dict[str, str] = {}
+_BAD_CC = {"", "XX", "T1", "ZZ"}   # Cloudflare placeholders for unknown/Tor
+
+def _resolve_country(cf_country: str | None, client_ip: str | None) -> str | None:
+    cc = (cf_country or "").strip().upper()
+    if len(cc) == 2 and cc not in _BAD_CC:
+        return cc
+    ip = (client_ip or "").split(",")[0].strip()
+    if not ip or ip.startswith(("10.", "192.168.", "127.", "172.16.", "::1")):
+        return None
+    if ip in _country_cache:
+        return _country_cache[ip] or None
+    try:
+        import httpx
+        r = httpx.get(f"http://ip-api.com/json/{ip}?fields=countryCode", timeout=2.5)
+        cc = (r.json().get("countryCode") or "").strip().upper() if r.status_code == 200 else ""
+        cc = cc if (len(cc) == 2 and cc not in _BAD_CC) else ""
+    except Exception:
+        cc = ""
+    _country_cache[ip] = cc
+    return cc or None
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
@@ -1490,6 +1551,33 @@ def auth_submissions(authorization: str = Header(None)):
             "queue_position": live.get("queue_position"),
         })
     return {"submissions": out}
+
+
+# ── Public impact tally ───────────────────────────────────────────────────────
+# Optional baseline floors (IMPACT_BASE_*) let you seed counts from prior /
+# offline usage (e.g. validation runs) so a fresh deployment isn't shown as 0.
+_IMPACT_BASE_SCANS     = int(os.environ.get("IMPACT_BASE_SCANS",     "0"))
+_IMPACT_BASE_COUNTRIES = int(os.environ.get("IMPACT_BASE_COUNTRIES", "0"))
+_IMPACT_BASE_USERS     = int(os.environ.get("IMPACT_BASE_USERS",     "0"))
+
+@app.get("/stats/impact")
+def stats_impact():
+    """Running tally for the homepage: scans QC'd, countries reached, users."""
+    with _db_lock, _db() as c:
+        scans = c.execute(
+            "SELECT COUNT(*) AS n FROM submissions WHERE kind='mriqc' AND completed=1"
+        ).fetchone()["n"]
+        users = c.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+        codes = [r["country"] for r in c.execute(
+            "SELECT DISTINCT country FROM submissions "
+            "WHERE country IS NOT NULL AND country != ''"
+        ).fetchall()]
+    return {
+        "scans":         scans + _IMPACT_BASE_SCANS,
+        "users":         users + _IMPACT_BASE_USERS,
+        "countries":     max(len(codes), _IMPACT_BASE_COUNTRIES),
+        "country_codes": sorted(codes),
+    }
 
 
 # ── Password reset ────────────────────────────────────────────────────────────

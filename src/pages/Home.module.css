@@ -619,3 +619,85 @@
   .iqmRow { grid-template-columns: 90px 1fr; }
   .iqmRow > .iqmInterpret { display: none; }
 }
+
+/* ─── Live impact tally ─────────────────────────────────────────────────── */
+.impact {
+  padding: 64px 0;
+  background:
+    radial-gradient(1200px 300px at 50% -10%, rgba(0, 200, 180, 0.10), transparent 70%),
+    var(--bg-2, #f4f7f7);
+  border-top: 1px solid var(--border, #e2e8e8);
+  border-bottom: 1px solid var(--border, #e2e8e8);
+}
+.impactHead { text-align: center; margin-bottom: 34px; }
+.impactEyebrow {
+  display: inline-block;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--teal, #0e9e8e);
+  margin-bottom: 8px;
+}
+.impactTitle {
+  font-size: clamp(1.3rem, 2.4vw, 1.9rem);
+  font-weight: 800;
+  color: var(--text, #16232b);
+  margin: 0;
+}
+.impactGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+.impactCell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 22px 12px;
+  background: var(--bg, #ffffff);
+  border: 1px solid var(--border, #e2e8e8);
+  border-radius: 16px;
+}
+.impactNum {
+  font-family: var(--font-display, inherit);
+  font-size: clamp(2.4rem, 6vw, 3.6rem);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--teal, #0e9e8e);
+  letter-spacing: -0.01em;
+}
+.impactPlus { font-size: 0.55em; vertical-align: super; opacity: 0.75; margin-left: 2px; }
+.impactLabel {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-2, #5b6166);
+  text-align: center;
+}
+.impactFlags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 28px;
+}
+.impactFlag {
+  font-size: 1.4rem;
+  line-height: 1;
+  filter: saturate(1.05);
+}
+.impactAnd {
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--text-3, #8a949b);
+  margin-left: 6px;
+}
+
+@media (max-width: 640px) {
+  .impactGrid { grid-template-columns: 1fr; max-width: 360px; }
+}

@@ -15,6 +15,13 @@ function authHeader() {
   return t ? `Bearer ${t}` : null
 }
 
+// Public running-impact tally for the homepage (scans QC'd, countries, users).
+export async function fetchImpact() {
+  const res = await fetch(`${API}/stats/impact`, { signal: AbortSignal.timeout(8000) })
+  if (!res.ok) throw new Error('Could not load impact stats')
+  return res.json()
+}
+
 export async function checkHealth() {
   const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(10000) })
   if (!res.ok) throw new Error('Server unreachable')
