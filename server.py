@@ -1322,6 +1322,10 @@ if not os.environ.get("AUTH_SECRET"):
     log.warning("AUTH_SECRET not set — generated a random one. Logins will "
                 "reset on restart. Set AUTH_SECRET in production.")
 
+# Optional "Sign in with Google". The client ID is public and exposed to the
+# browser via /auth/config; set GOOGLE_CLIENT_ID to enable the feature.
+_GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+
 
 def _db():
     conn = sqlite3.connect(str(_DB_PATH))
@@ -1517,6 +1521,67 @@ def auth_login(payload: dict = Body(...)):
         row = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
     if not row or not _verify_pw(pw, row["pw_hash"], row["pw_salt"]):
         raise HTTPException(401, "Incorrect email or password")
+    return {"token": _make_token(row["id"]), "user": _user_public(row)}
+
+
+@app.get("/auth/config")
+def auth_config():
+    """Public front-end config. The Google client ID is safe to expose."""
+    return {"google_client_id": _GOOGLE_CLIENT_ID}
+
+
+@app.post("/auth/google")
+def auth_google(payload: dict = Body(...)):
+    """
+    Exchange a Google ID token ('credential' from Google Identity Services)
+    for a WebMRIQC session token. Verifies the token with Google, then finds
+    or creates the matching account. Email/password login keeps working; this
+    is just an alternative way in.
+    """
+    if not _GOOGLE_CLIENT_ID:
+        raise HTTPException(503, "Google sign-in is not configured on this server")
+    credential = (payload.get("credential") or "").strip()
+    if not credential:
+        raise HTTPException(400, "Missing Google credential")
+
+    # Verify the ID token with Google's tokeninfo endpoint (validates the
+    # signature and expiry server-side; we additionally check audience/issuer).
+    import httpx
+    try:
+        r = httpx.get("https://oauth2.googleapis.com/tokeninfo",
+                      params={"id_token": credential}, timeout=8)
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach Google to verify sign-in: {e}")
+    if r.status_code != 200:
+        raise HTTPException(401, "Invalid or expired Google sign-in")
+    info = r.json()
+
+    if info.get("aud") != _GOOGLE_CLIENT_ID:
+        raise HTTPException(401, "Google token was issued for a different app")
+    if info.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+        raise HTTPException(401, "Invalid Google token issuer")
+    if str(info.get("email_verified", "")).lower() not in ("true", "1"):
+        raise HTTPException(401, "Your Google email is not verified")
+    email = (info.get("email") or "").strip().lower()
+    name  = (info.get("name") or "").strip()
+    if not email:
+        raise HTTPException(401, "Google sign-in returned no email")
+
+    # Find or create the user. Google accounts get a random unusable password
+    # (they always sign in through Google); email/password users are matched
+    # by email so the two methods share one account.
+    with _db_lock, _db() as c:
+        row = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        if not row:
+            pw_hash, pw_salt = _hash_pw(secrets.token_hex(24))
+            cur = c.execute(
+                "INSERT INTO users (email, name, institution, pw_hash, pw_salt, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (email, name, "", pw_hash, pw_salt,
+                 datetime.datetime.utcnow().isoformat()),
+            )
+            row = c.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+
     return {"token": _make_token(row["id"]), "user": _user_public(row)}
 
 

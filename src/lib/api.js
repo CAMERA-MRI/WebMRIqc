@@ -398,6 +398,14 @@ export function registerUser({ email, password, name, institution }) {
 export function loginUser({ email, password }) {
   return authFetch('/auth/login', { method: 'POST', body: { email, password } })
 }
+// Public front-end config (e.g. the Google client ID, or '' when disabled).
+export function fetchAuthConfig() {
+  return authFetch('/auth/config')
+}
+// Exchange a Google ID token (GSI 'credential') for a WebMRIQC session.
+export function googleLogin(credential) {
+  return authFetch('/auth/google', { method: 'POST', body: { credential } })
+}
 export function fetchMe(token) {
   return authFetch('/auth/me', { token })
 }

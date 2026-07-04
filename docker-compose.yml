@@ -70,6 +70,13 @@ services:
       #   openssl rand -hex 32
       - AUTH_SECRET=${AUTH_SECRET:-}
       - DATA_DIR=/data
+      # Optional "Sign in with Google" — set the OAuth 2.0 Web client ID.
+      # Leave empty to disable (the Google button then simply won't appear).
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      # Optional impact-tally floors (seed prior/offline usage)
+      - IMPACT_BASE_SCANS=${IMPACT_BASE_SCANS:-0}
+      - IMPACT_BASE_COUNTRIES=${IMPACT_BASE_COUNTRIES:-0}
+      - IMPACT_BASE_USERS=${IMPACT_BASE_USERS:-0}
 
     # Mount the host's /tmp/webmriqc so large DICOM/BIDS work dirs live on the
     # host filesystem instead of the container's overlay layer. This avoids

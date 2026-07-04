@@ -11,7 +11,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import {
   TOKEN_KEY, getToken,
-  registerUser, loginUser, fetchMe,
+  registerUser, loginUser, googleLogin, fetchMe,
 } from '../lib/api'
 
 const AuthContext = createContext(null)
@@ -44,13 +44,17 @@ export function AuthProvider({ children }) {
     return persist(await registerUser(info))
   }, [persist])
 
+  const loginWithGoogle = useCallback(async (credential) => {
+    return persist(await googleLogin(credential))
+  }, [persist])
+
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY)
     setUser(null)
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, loginWithGoogle, logout }}>
       {children}
     </AuthContext.Provider>
   )

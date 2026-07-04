@@ -107,6 +107,25 @@
 .submit:hover:not(:disabled) { background: var(--teal-dark, #00a896); }
 .submit:disabled { opacity: 0.6; cursor: default; }
 
+/* "or" divider between the form and the Google button */
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 16px;
+  color: var(--text-3);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
 .footer {
   text-align: center;
   font-size: 0.85rem;
