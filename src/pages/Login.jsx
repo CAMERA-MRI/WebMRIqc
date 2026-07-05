@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import GoogleButton from '../components/GoogleButton'
 import s from './Auth.module.css'
 
 function Logo() {
@@ -72,9 +71,6 @@ export default function Login() {
             {busy ? 'Signing in…' : 'Sign In'}
           </button>
         </form>
-
-        <div className={s.divider}>or</div>
-        <GoogleButton onError={setError} dest={dest} />
 
         <p className={s.footer}>
           No account? <Link to="/register" className={s.footerLink}>Create one</Link>

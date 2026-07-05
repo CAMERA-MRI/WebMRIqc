@@ -1309,13 +1309,37 @@ async def support_ticket(
 import sqlite3, hmac, base64, time, secrets
 from threading import Lock as _ThreadLock
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-try:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    DATA_DIR = JOB_ROOT          # fallback to the already-mounted job volume
-_DB_PATH   = DATA_DIR / "webmriqc.db"
-_db_lock   = _ThreadLock()
+def _pick_writable_dir() -> Path:
+    """Choose a directory the accounts DB can actually be written to.
+
+    A 500 on register/login almost always means the DB location isn't
+    writable (e.g. the /data volume is root-owned but the app runs as a
+    different user). We therefore test each candidate by creating and
+    deleting a probe file, and fall back to the already-mounted, known-
+    writable job volume, then the system temp dir.
+    """
+    candidates = [
+        os.environ.get("DATA_DIR", "/data"),
+        str(JOB_ROOT),                 # /tmp/webmriqc_jobs — mounted & writable
+        tempfile.gettempdir(),
+    ]
+    for cand in candidates:
+        p = Path(cand)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            probe = p / ".webmriqc_write_test"
+            probe.write_text("ok")
+            probe.unlink()
+            return p
+        except Exception as exc:
+            log.warning("Data dir %s not usable (%s) — trying next", cand, exc)
+    return JOB_ROOT
+
+import tempfile
+DATA_DIR = _pick_writable_dir()
+_DB_PATH  = DATA_DIR / "webmriqc.db"
+_db_lock  = _ThreadLock()
+log.info("Accounts DB → %s", _DB_PATH)
 
 _AUTH_SECRET = os.environ.get("AUTH_SECRET", "") or secrets.token_hex(32)
 if not os.environ.get("AUTH_SECRET"):
@@ -1331,6 +1355,11 @@ def _db():
     conn = sqlite3.connect(str(_DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _now_iso() -> str:
+    """Timezone-aware UTC timestamp (avoids the deprecated utcnow())."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 def _init_db():
@@ -1502,13 +1531,17 @@ def auth_register(payload: dict = Body(...)):
             cur = c.execute(
                 "INSERT INTO users (email, name, institution, pw_hash, pw_salt, created_at) "
                 "VALUES (?,?,?,?,?,?)",
-                (email, name, inst, pw_hash, pw_salt,
-                 datetime.datetime.utcnow().isoformat()),
+                (email, name, inst, pw_hash, pw_salt, _now_iso()),
             )
             uid = cur.lastrowid
             row = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     except sqlite3.IntegrityError:
         raise HTTPException(409, "An account with that email already exists")
+    except Exception as e:
+        # Surface the real cause (e.g. "unable to open database file" when the
+        # DB directory isn't writable) instead of an opaque 500.
+        log.exception("Registration failed (DB=%s)", _DB_PATH)
+        raise HTTPException(500, f"Could not create your account: {e}")
 
     return {"token": _make_token(uid), "user": _user_public(row)}
 
@@ -1517,8 +1550,12 @@ def auth_register(payload: dict = Body(...)):
 def auth_login(payload: dict = Body(...)):
     email = (payload.get("email") or "").strip().lower()
     pw    = payload.get("password") or ""
-    with _db_lock, _db() as c:
-        row = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+    try:
+        with _db_lock, _db() as c:
+            row = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+    except Exception as e:
+        log.exception("Login failed (DB=%s)", _DB_PATH)
+        raise HTTPException(500, f"Login failed: {e}")
     if not row or not _verify_pw(pw, row["pw_hash"], row["pw_salt"]):
         raise HTTPException(401, "Incorrect email or password")
     return {"token": _make_token(row["id"]), "user": _user_public(row)}
