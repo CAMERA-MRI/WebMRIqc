@@ -961,9 +961,12 @@ async def run_mriqc_endpoint(
             shutil.make_archive(str(zip_out), "zip", root_dir=out_dir)
             label = f"mriqc_{participant_label}" if participant_label else "mriqc_results"
             job_done(job_id, zip_out.with_suffix(".zip"), label)
-            _mark_completed(job_id)          # count toward the public impact tally
+            # Persist the scalar IQMs for the user's history + benchmarking, then
+            # mark complete (feeds the impact tally). Images stay transient.
+            iqms = _extract_iqms(out_dir)
+            _mark_completed(job_id, iqms)
             shutil.rmtree(work_dir, ignore_errors=True)
-            log.info("[%s] MRIQC done ✓", job_id)
+            log.info("[%s] MRIQC done ✓ (iqms=%s)", job_id, "yes" if iqms else "no")
 
         except subprocess.TimeoutExpired:
             log.error("[%s] mriqc timed out after 2 hours", job_id)
@@ -1390,12 +1393,16 @@ def _init_db():
                 salt        TEXT NOT NULL,
                 expires_at  REAL NOT NULL
             )""")
-        # ── Migrations: add impact-tracking columns to submissions if missing ──
+        # ── Migrations: add columns to submissions if missing ─────────────────
         cols = {r["name"] for r in c.execute("PRAGMA table_info(submissions)").fetchall()}
         if "country" not in cols:
             c.execute("ALTER TABLE submissions ADD COLUMN country TEXT")
         if "completed" not in cols:
             c.execute("ALTER TABLE submissions ADD COLUMN completed INTEGER DEFAULT 0")
+        if "metrics_json" not in cols:      # persisted IQMs for history/benchmarking
+            c.execute("ALTER TABLE submissions ADD COLUMN metrics_json TEXT")
+        if "is_public" not in cols:         # user opted to share these IQMs openly
+            c.execute("ALTER TABLE submissions ADD COLUMN is_public INTEGER DEFAULT 0")
     log.info("Auth DB ready at %s", _DB_PATH)
 
 _init_db()
@@ -1467,18 +1474,59 @@ def _record_submission(user_row, job_id: str, kind: str, label: str, country: st
             c.execute(
                 "INSERT INTO submissions (job_id, user_id, kind, label, created_at, country) "
                 "VALUES (?,?,?,?,?,?)",
-                (job_id, user_row["id"], kind, label,
-                 datetime.datetime.utcnow().isoformat(), country),
+                (job_id, user_row["id"], kind, label, _now_iso(), country),
             )
     except Exception:
         log.exception("Failed to record submission for job %s", job_id)
 
 
-def _mark_completed(job_id: str):
-    """Flag a submission as successfully QC'd — feeds the public impact tally."""
+# Scalar IQM keys worth persisting for history + benchmarking (small, numeric,
+# de-identified — no image data). A few acquisition params are kept for context.
+_IQM_KEEP_PREFIX = ("cnr", "snr", "cjv", "efc", "fber", "fwhm", "inu", "qi",
+                    "wm2max", "tsnr", "fd_", "dvars", "aor", "aqi", "gsr",
+                    "icvs", "rpve", "size", "spacing", "tpm")
+_META_KEEP = ("modality", "subject_id", "session_id")
+
+def _extract_iqms(out_dir: Path) -> dict | None:
+    """Read the per-subject IQM JSON MRIQC wrote and return a compact, scalar-
+    only dict (first subject). Returns None if no metrics file is found."""
+    try:
+        for jf in sorted(out_dir.rglob("*.json")):
+            name = jf.name.lower()
+            if name in ("dataset_description.json",) or name.endswith("participants.json"):
+                continue
+            try:
+                data = json.loads(jf.read_text())
+            except Exception:
+                continue
+            if not any(k in data for k in ("cnr", "snr_total", "tsnr", "efc")):
+                continue
+            out = {}
+            for k, v in data.items():
+                if isinstance(v, (int, float)) and (k.startswith(_IQM_KEEP_PREFIX)):
+                    out[k] = v
+            meta = data.get("bids_meta", {}) if isinstance(data.get("bids_meta"), dict) else {}
+            for mk in _META_KEEP:
+                if meta.get(mk) is not None:
+                    out[f"meta_{mk}"] = meta[mk]
+            if meta.get("MagneticFieldStrength") is not None:
+                out["meta_field"] = meta["MagneticFieldStrength"]
+            out["_source"] = jf.name
+            return out or None
+    except Exception:
+        log.exception("IQM extraction failed for %s", out_dir)
+    return None
+
+
+def _mark_completed(job_id: str, metrics: dict | None = None):
+    """Flag a submission as successfully QC'd (feeds the impact tally) and
+    persist its scalar IQMs for the user's history and benchmarking."""
     try:
         with _db_lock, _db() as c:
-            c.execute("UPDATE submissions SET completed=1 WHERE job_id=?", (job_id,))
+            c.execute(
+                "UPDATE submissions SET completed=1, metrics_json=? WHERE job_id=?",
+                (json.dumps(metrics) if metrics else None, job_id),
+            )
     except Exception:
         log.exception("Failed to mark submission completed for job %s", job_id)
 
@@ -1637,22 +1685,78 @@ def auth_submissions(authorization: str = Header(None)):
         raise HTTPException(401, "Not authenticated")
     with _db_lock, _db() as c:
         subs = c.execute(
-            "SELECT job_id, kind, label, created_at FROM submissions "
+            "SELECT job_id, kind, label, created_at, completed, country, "
+            "metrics_json, is_public FROM submissions "
             "WHERE user_id=? ORDER BY id DESC LIMIT 200", (row["id"],),
         ).fetchall()
     # Attach the live status from the filesystem job store / queue.
     out = []
     for s in subs:
-        live = _q_status(s["job_id"]) or job_status(s["job_id"]) or {"status": "expired"}
+        live = _q_status(s["job_id"]) or job_status(s["job_id"])
+        # A completed run whose transient files have expired is still "done"
+        # for the user's history, because we persisted its metrics.
+        status = (live or {}).get("status") or ("done" if s["completed"] else "expired")
+        metrics = None
+        if s["metrics_json"]:
+            try: metrics = json.loads(s["metrics_json"])
+            except Exception: metrics = None
         out.append({
             "job_id":     s["job_id"],
             "kind":       s["kind"],
             "label":      s["label"],
             "created_at": s["created_at"],
-            "status":     live.get("status", "unknown"),
-            "queue_position": live.get("queue_position"),
+            "status":     status,
+            "queue_position": (live or {}).get("queue_position"),
+            "country":    s["country"],
+            "metrics":    metrics,
+            "is_public":  bool(s["is_public"]),
+            "downloadable": bool(live and live.get("status") == "done"),  # ZIP still on server
         })
     return {"submissions": out}
+
+
+@app.patch("/auth/submissions/{job_id}/visibility")
+def auth_submission_visibility(job_id: str, payload: dict = Body(...),
+                               authorization: str = Header(None)):
+    """Let the owner opt a scan's IQMs into (or out of) the open pool."""
+    row = _user_from_header(authorization)
+    if not row:
+        raise HTTPException(401, "Not authenticated")
+    make_public = 1 if payload.get("public") else 0
+    with _db_lock, _db() as c:
+        cur = c.execute(
+            "UPDATE submissions SET is_public=? WHERE job_id=? AND user_id=?",
+            (make_public, job_id, row["id"]),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Submission not found")
+    return {"job_id": job_id, "is_public": bool(make_public)}
+
+
+@app.get("/stats/open-metrics")
+def stats_open_metrics():
+    """Publicly shared IQMs (opted-in by their owners) — an open benchmark pool.
+    De-identified: metric numbers, modality, and country only; no names."""
+    with _db_lock, _db() as c:
+        rows = c.execute(
+            "SELECT label, country, metrics_json, created_at FROM submissions "
+            "WHERE is_public=1 AND completed=1 AND metrics_json IS NOT NULL "
+            "ORDER BY id DESC LIMIT 500"
+        ).fetchall()
+    out = []
+    for r in rows:
+        try:
+            m = json.loads(r["metrics_json"])
+        except Exception:
+            continue
+        out.append({
+            "label":      r["label"],
+            "country":    r["country"],
+            "created_at": r["created_at"],
+            "modality":   m.get("meta_modality") or ("BOLD" if "tsnr" in m else "T1w"),
+            "metrics":    {k: v for k, v in m.items() if not k.startswith(("meta_", "_"))},
+        })
+    return {"count": len(out), "scans": out}
 
 
 # ── Public impact tally ───────────────────────────────────────────────────────

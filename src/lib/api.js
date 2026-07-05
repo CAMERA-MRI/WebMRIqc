@@ -412,6 +412,14 @@ export function fetchMe(token) {
 export function fetchMySubmissions(token) {
   return authFetch('/auth/submissions', { token })
 }
+// Opt a scan's IQMs into (or out of) the open benchmark pool.
+export function setSubmissionPublic(jobId, isPublic) {
+  return authFetch(`/auth/submissions/${jobId}/visibility`, { method: 'PATCH', body: { public: isPublic } })
+}
+// Publicly shared IQMs from all opted-in users (open benchmark pool).
+export function fetchOpenMetrics() {
+  return authFetch('/stats/open-metrics')
+}
 export function forgotPassword({ email }) {
   return authFetch('/auth/forgot-password', { method: 'POST', body: { email } })
 }

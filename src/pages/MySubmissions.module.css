@@ -144,3 +144,112 @@
   color: var(--text-3);
   line-height: 1.6;
 }
+
+/* ── History cards: expandable metrics + public toggle ─────────────────── */
+.card {
+  background: var(--bg-2, #f7f9f9);
+  border: 1px solid var(--border, #e2e8e8);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.card:hover { border-color: rgba(0, 200, 180, 0.3); }
+.card + .card { margin-top: 10px; }
+/* the inner .row is just the flex header now — the card owns the frame */
+.card .row { background: none; border: none; border-radius: 0; }
+.card .row:hover { border-color: transparent; }
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.chev, .chevOpen {
+  vertical-align: -1px;
+  margin-right: 6px;
+  color: var(--teal, #0e9e8e);
+  transition: transform 0.15s;
+}
+.chevOpen { transform: rotate(90deg); }
+
+.rowRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.pubBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d6dede);
+  background: var(--bg, #fff);
+  color: var(--text-2, #5b6166);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.pubBtn:hover:not(:disabled) { border-color: var(--teal, #0e9e8e); color: var(--teal, #0e9e8e); }
+.pubBtn:disabled { opacity: 0.6; cursor: default; }
+.pubOn {
+  background: var(--teal, #0e9e8e);
+  border-color: var(--teal, #0e9e8e);
+  color: #fff;
+}
+
+.metricsWrap {
+  padding: 4px 20px 18px;
+  border-top: 1px dashed var(--border, #e2e8e8);
+}
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.metricCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #e2e8e8);
+  border-radius: 9px;
+}
+.metricName {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3, #8a949b);
+  font-family: var(--font-mono, monospace);
+}
+.metricVal {
+  font-size: 1.15rem;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+  color: var(--text, #16232b);
+  line-height: 1.1;
+}
+.metricRank { font-size: 0.72rem; font-weight: 700; }
+.metricRankNa { font-size: 0.72rem; color: var(--text-3, #aaa); }
+
+.benchNote {
+  margin: 14px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-3, #8a949b);
+  line-height: 1.5;
+}
