@@ -1309,7 +1309,7 @@ async def support_ticket(
 #                each boot (existing logins are invalidated on restart).
 # ══════════════════════════════════════════════════════════════════════════════
 
-import sqlite3, hmac, base64, time, secrets
+import sqlite3, hmac, hashlib, base64, time, secrets
 from threading import Lock as _ThreadLock
 
 def _pick_writable_dir() -> Path:
@@ -1573,8 +1573,8 @@ def auth_register(payload: dict = Body(...)):
     if len(pw) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
 
-    pw_hash, pw_salt = _hash_pw(pw)
     try:
+        pw_hash, pw_salt = _hash_pw(pw)
         with _db_lock, _db() as c:
             cur = c.execute(
                 "INSERT INTO users (email, name, institution, pw_hash, pw_salt, created_at) "
