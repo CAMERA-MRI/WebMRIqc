@@ -20,7 +20,7 @@ Or locally (with a venv that has dcm2bids + mriqc installed):
   uvicorn server:app --host 0.0.0.0 --port 8000
 """
 
-import json, os, uuid, shutil, zipfile, logging, datetime, subprocess, re, gzip, struct
+import json, os, time, uuid, shutil, zipfile, logging, datetime, subprocess, re, gzip, struct
 from collections import deque
 from pathlib import Path
 from threading import Thread, Lock
@@ -224,6 +224,44 @@ def job_status(job_id: str) -> dict | None:
     if (d / "error.txt").exists():
         return {"status": "error", "error": (d / "error.txt").read_text()}
     return {"status": "running"}
+
+
+# ── Background cleanup of finished jobs ───────────────────────────────────────
+# Results are kept for a grace period after completion so that downloads (and
+# retries on slow connections) keep working, then removed. A hard age cap also
+# clears any job dir left behind by a crashed/OOM-killed worker. This replaces
+# the old "delete on first download", which caused "Job not found" on retries
+# and leaked disk for jobs that were never downloaded.
+JOB_RESULT_TTL_MIN = int(os.environ.get("JOB_RESULT_TTL_MIN", "45"))   # keep results this long after finish
+JOB_MAX_AGE_MIN    = int(os.environ.get("JOB_MAX_AGE_MIN",    "300"))  # hard cap (> MRIQC 2h timeout)
+
+def _cleanup_old_jobs():
+    now = time.time()
+    try:
+        for d in JOB_ROOT.iterdir():
+            if not d.is_dir():
+                continue
+            try:
+                marker = None
+                if (d / "done").exists():      marker = d / "done"
+                elif (d / "error.txt").exists(): marker = d / "error.txt"
+                finished_age = (now - marker.stat().st_mtime) / 60 if marker else None
+                dir_age      = (now - d.stat().st_mtime) / 60
+                if (finished_age is not None and finished_age > JOB_RESULT_TTL_MIN) \
+                   or dir_age > JOB_MAX_AGE_MIN:
+                    shutil.rmtree(d, ignore_errors=True)
+                    log.info("[cleanup] removed job dir %s", d.name)
+            except FileNotFoundError:
+                continue   # another worker's sweep already removed it
+    except Exception:
+        log.exception("job cleanup sweep failed")
+
+def _job_cleanup_loop():
+    while True:
+        time.sleep(300)          # sweep every 5 minutes
+        _cleanup_old_jobs()
+
+Thread(target=_job_cleanup_loop, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -706,7 +744,10 @@ def download_job_result(background_tasks: BackgroundTasks, job_id: str):
         raise HTTPException(404, "Result file missing — job may have expired")
 
     label = (_jdir(job_id) / "done").read_text().strip() or job_id
-    background_tasks.add_task(shutil.rmtree, str(_jdir(job_id)), True)
+    # NOTE: do NOT delete the job dir here. Deleting on the first download made
+    # download retries (common on slow connections) fail with "Job not found".
+    # A background sweeper (see _cleanup_old_jobs) removes finished jobs after a
+    # grace period, so retries and re-downloads keep working meanwhile.
     return FileResponse(
         str(result),
         media_type="application/zip",

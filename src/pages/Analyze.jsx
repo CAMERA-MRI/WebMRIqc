@@ -391,8 +391,8 @@ function ConvertingStep({ convPhase, progress, statusMsg, elapsed }) {
 
         <p className={s.convNote}>
           {uploading
-            ? 'Data is sent to your local Python server — nothing leaves your machine.'
-            : <>Running <strong>dcm2niix</strong> + <strong>dcm2bids</strong> locally. Typically 1–5 minutes per dataset.</>}
+            ? 'Uploading your data securely for processing…'
+            : <>Running <strong>dcm2niix</strong> + <strong>dcm2bids</strong>. Typically 1–5 minutes per dataset.</>}
         </p>
       </div>
     </div>
