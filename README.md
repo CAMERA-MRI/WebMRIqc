@@ -23,6 +23,7 @@ real barrier. One powerful server does the compute; everyone else just needs a b
 - [How it works](#how-it-works)
 - [The DICOM → BIDS pipeline](#the-dicom--bids-pipeline)
 - [Architecture](#architecture)
+- [Validation](#validation)
 - [Quick start (Docker)](#quick-start-docker)
 - [Local development](#local-development)
 - [Configuration](#configuration)
@@ -134,6 +135,57 @@ overwritten.
   hashing, hand-rolled HS256 JWTs.
 - **Queue:** a fair-share scheduler with `MAX_CONCURRENT_JOBS` running and the rest
   queued, plus a background sweeper that cleans up finished/stale job directories.
+
+---
+
+## Validation
+
+Because WebMRIQC runs the **unmodified** MRIQC engine, its metrics should match a native
+MRIQC installation exactly. We verified this on matched scans from the **BraTS-Africa** and
+**BraTS 2021** datasets, as reported in our MICCAI 2026 (MIRASOL workshop) paper.
+
+### Measurement equivalence — web vs native MRIQC
+
+Across all 13 image-quality metrics, WebMRIQC reproduces native MRIQC with **excellent
+absolute agreement** — intraclass correlation **ICC(2,1) ≥ 0.999** for every metric, with
+five (EFC and the four FWHM measures) numerically identical. Bias (Web − Native) is
+negligible and the 95% limits of agreement are tight.
+
+| Metric | Mean ± SD (Native) | Mean ± SD (Web) | ICC(2,1) | Bias (Web − Native) [p] | 95% LoA |
+|---|---|---|---|---|---|
+| CJV | 1.126 ± 0.348 | 1.127 ± 0.346 | 0.9997 | 0.0015 (p = 0.417) | [−0.0149, 0.0179] |
+| CNR | 0.847 ± 0.253 | 0.846 ± 0.252 | 0.9999 | −0.0016 (p = 0.080) | [−0.0092, 0.0061] |
+| EFC | 0.626 ± 0.108 | 0.626 ± 0.108 | 1.0000 | 0.0000 (p = 1.000) | [0.0000, 0.0000] |
+| FBER | 10338.63 ± 12688.49 | 10338.57 ± 12688.47 | 1.0000 | −0.0582 (p = 0.345) | [−0.5983, 0.4819] |
+| FWHM-avg (mm) | 3.431 ± 0.668 | 3.431 ± 0.668 | 1.0000 | 0.0000 (p = 0.859) | [0.0000, 0.0000] |
+| FWHM-x (mm) | 3.012 ± 0.610 | 3.012 ± 0.610 | 1.0000 | 0.0000 (p = 0.187) | [0.0000, 0.0000] |
+| FWHM-y (mm) | 3.921 ± 0.846 | 3.921 ± 0.846 | 1.0000 | 0.0000 (p = 0.127) | [0.0000, 0.0000] |
+| FWHM-z (mm) | 3.360 ± 0.573 | 3.360 ± 0.573 | 1.0000 | 0.0000 (p = 0.166) | [0.0000, 0.0000] |
+| SNR-CSF | 1.728 ± 0.201 | 1.728 ± 0.202 | 0.9999 | 0.0003 (p = 0.709) | [−0.0065, 0.0071] |
+| SNR-GM | 5.181 ± 1.461 | 5.186 ± 1.463 | 0.9999 | 0.0053 (p = 0.319) | [−0.0412, 0.0518] |
+| SNR-Total | 6.276 ± 1.332 | 6.278 ± 1.336 | 0.9999 | 0.0025 (p = 0.475) | [−0.0281, 0.0330] |
+| SNR-WM | 11.918 ± 2.896 | 11.920 ± 2.904 | 1.0000 | 0.0018 (p = 0.748) | [−0.0489, 0.0525] |
+| WM2MAX | 0.562 ± 0.211 | 0.562 ± 0.211 | 1.0000 | 0.0000 (p = 0.650) | [−0.0005, 0.0004] |
+
+<sub>Matched BraTS-Africa cohort (n = 20). ICC(2,1) = two-way random-effects, absolute-agreement
+intraclass correlation (single measures); Bias = mean difference (Web − Native) with its paired
+*t*-test *p*-value; LoA = 95% limits of agreement (bias ± 1.96 SD). Rows with p = 1.000 and
+LoA = [0, 0] are computed identically by both platforms.</sub>
+
+### Benchmarking against reference data
+
+WebMRIQC also places each scan against reference distributions. Comparing the matched
+BraTS-Africa measurements (web and native) against the BraTS 2021 benchmark shows the
+expected large between-dataset differences for the signal/contrast metrics — SNR-GM, CNR
+and CJV (Welch's unpaired *t*-test, p < 0.0001) — and no difference for the entropy focus
+criterion (EFC), while web and native measurements remain statistically indistinguishable
+throughout.
+
+![WebMRIQC vs Native MRIQC vs BraTS 2021 across four core IQMs](docs/validation/figure3_benchmark.png)
+
+<sub>Four core IQMs for Web-MRIQC and Native-MRIQC on BraTS-Africa (n = 20 each) versus the
+BraTS 2021 benchmark (n = 20). Boxes show median and IQR; whiskers extend to 1.5×IQR; points are
+individual subjects. Significance: Welch's unpaired *t*-test (**** p < 0.0001; ns, not significant).</sub>
 
 ---
 
