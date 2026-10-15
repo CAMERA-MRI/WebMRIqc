@@ -419,8 +419,9 @@ def _run_cmd(cmd: list, label: str, timeout=None):
 
 
 def _custom_entities(entities: dict) -> list:
-    """Turn a {task, acq, dir, run, echo} dict into dcm2bids custom_entities tokens."""
-    order = ("task", "acq", "dir", "run", "echo")
+    """Turn a {task, acq, ce, dir, inv, run, echo, part} dict into dcm2bids
+    custom_entities tokens, in BIDS entity order."""
+    order = ("task", "acq", "ce", "dir", "inv", "run", "echo", "part")
     return [f"{k}-{entities[k]}" for k in order if entities.get(k) not in (None, "")]
 
 
@@ -444,14 +445,18 @@ def _series_rank(k: dict):
 
 
 def build_dcm2bids_config(helper_dir: Path, config_path: Path,
-                          fallback_suffix: str = "T1w"):
+                          fallback_suffix: str = "T1w", param_decisions: dict = None):
     """
     Generate a dcm2bids config FROM the helper sidecars, so its criteria are
     guaranteed to match this subject's real series — the key to "the right files
-    get picked". classify_series() decides each series' datatype/suffix; junk
-    (localizers / derived maps) is omitted; a series with no standard-modality
-    match is mapped to anat/<fallback_suffix> instead of being dropped (handles
-    de-identified / NIfTI-derived DICOMs).
+    get picked".
+
+    Each series' datatype/suffix is decided by the acquisition-parameter
+    classifier when ``param_decisions`` (keyed by SeriesNumber) names it, and by
+    the name-based classify_series() otherwise — so the parameters lead and the
+    names are the fallback. Junk (localizers / derived maps) is omitted; a series
+    with no standard-modality match is mapped to anat/<fallback_suffix> instead
+    of being dropped (handles de-identified / NIfTI-derived DICOMs).
 
     Returns (descriptions, kept_lines, skipped_lines).
     """
@@ -469,28 +474,62 @@ def build_dcm2bids_config(helper_dir: Path, config_path: Path,
             meta = {}
         desc_val = meta.get("SeriesDescription", "")
         all_desc_counts[desc_val] = all_desc_counts.get(desc_val, 0) + 1
-        decision = classify_series(meta, js.with_suffix(".bval").exists(), _nii_nvols(nii))
         label = desc_val or js.stem
-        if "skip" in decision and decision.get("junk"):
-            skipped_lines.append(f"  [-] {label}  ({decision['skip']})")
-            continue
-        if "skip" in decision:                       # non-junk, unrecognized → fallback
-            datatype, suffix, entities, sidecar, fb = "anat", fallback_suffix, {}, {}, True
+        desc_lc = " ".join(str(meta.get(k, "")) for k in
+                           ("SeriesDescription", "ProtocolName", "SequenceName")).lower()
+        itype = [str(x).upper() for x in _as_list(meta.get("ImageType"))]
+        junk_name = any(s in desc_lc for s in _SKIP_SUBSTR) or "LOCALIZER" in itype
+
+        prec = None
+        if param_decisions:
+            try:
+                prec = param_decisions.get(int(meta.get("SeriesNumber")))
+            except (TypeError, ValueError):
+                prec = None
+
+        if prec is not None:
+            # Named by the acquisition parameters (BIDS-Manager classifier).
+            if prec.get("exclude") or junk_name:
+                reason = prec.get("reason", "left out") if prec.get("exclude") \
+                    else "localizer/derived (name)"
+                skipped_lines.append(f"  [-] {label}  (parameters: {reason})")
+                continue
+            datatype, suffix = prec["datatype"], prec["suffix"]
+            entities, sidecar, fb, src = dict(prec.get("entities", {})), {}, False, "param"
         else:
-            datatype, suffix = decision["datatype"], decision["suffix"]
-            entities = dict(decision.get("entities", {}))
-            sidecar = decision.get("sidecar", {})
-            fb = False
+            decision = classify_series(meta, js.with_suffix(".bval").exists(), _nii_nvols(nii))
+            if "skip" in decision and decision.get("junk"):
+                skipped_lines.append(f"  [-] {label}  ({decision['skip']})")
+                continue
+            if "skip" in decision:                   # non-junk, unrecognized → fallback
+                datatype, suffix, entities, sidecar, fb = "anat", fallback_suffix, {}, {}, True
+            else:
+                datatype, suffix = decision["datatype"], decision["suffix"]
+                entities = dict(decision.get("entities", {}))
+                sidecar = decision.get("sidecar", {})
+                fb = False
+            src = "name"
+
+        # BIDS requires a task on func; derive it from the name when the
+        # parameters did not carry one, and mirror it into the sidecar.
+        if datatype == "func" and suffix in ("bold", "sbref") and not entities.get("task"):
+            entities["task"] = _task_name(re.sub(r"[^a-z0-9]+", " ", desc_lc))
+        if datatype == "func" and suffix == "bold" and entities.get("task") \
+                and not sidecar.get("TaskName"):
+            sidecar = {**sidecar, "TaskName": entities["task"]}
+
         kept.append({"series": meta.get("SeriesNumber", 0), "desc": desc_val,
                      "datatype": datatype, "suffix": suffix, "entities": entities,
                      "sidecar": sidecar, "label": label, "fallback": fb,
-                     "meta": meta, "size": nii.stat().st_size})
+                     "meta": meta, "size": nii.stat().st_size, "src": src})
 
     # group by modality signature
     groups = {}
     for k in kept:
         gkey = (k["datatype"], k["suffix"], k["entities"].get("task"),
-                k["entities"].get("dir"), k["entities"].get("acq"))
+                k["entities"].get("dir"), k["entities"].get("acq"),
+                k["entities"].get("inv"), k["entities"].get("part"),
+                k["entities"].get("echo"))
         groups.setdefault(gkey, []).append(k)
 
     # ANATOMICAL: keep only the single best series per modality — a NORM/non-NORM
@@ -531,6 +570,7 @@ def build_dcm2bids_config(helper_dir: Path, config_path: Path,
         descriptions.append(entry)
         kept_lines.append(f"  [+] {k['label']}  ->  {k['datatype']}/{k['suffix']}"
                           f"{''.join('_' + e for e in ents)}"
+                          f"  [{k.get('src', 'name')}]"
                           f"{' (fallback)' if k['fallback'] else ''}")
 
     config_path.write_text(json.dumps(
@@ -574,8 +614,11 @@ def build_bids_from_dicom(dicom_dir: Path, bids_out: Path,
     Standard dcm2bids conversion for one subject:
       1. dcm2bids_scaffold      — create the BIDS skeleton.
       2. dcm2bids_helper        — convert every series to NIfTI+JSON to inspect.
-      3. build_dcm2bids_config  — generate a config FROM those sidecars so the
-         criteria match this subject's real series (incl. de-identified scans).
+      3a. classify_dicom_dir    — (default) name each series from its acquisition
+         parameters by reading the original DICOM; name-based fallback otherwise.
+      3. build_dcm2bids_config  — generate a config FROM those sidecars (using the
+         parameter decisions when present) so the criteria match this subject's
+         real series (incl. de-identified scans).
       4. dcm2bids               — pick the matched files and place them in BIDS.
       5. validate               — non-blocking sanity check.
     Raises RuntimeError (with the helper breakdown) only if no image lands in the
@@ -598,11 +641,29 @@ def build_bids_from_dicom(dicom_dir: Path, bids_out: Path,
     if rc != 0 or not helper_dir.exists():
         raise RuntimeError(f"dcm2bids_helper failed (exit {rc}):\n{out[-1500:]}")
 
+    # 3a. acquisition-parameter classification (default; name-based fallback) ──
+    # Name each series from HOW it was acquired (TE/TR/TI, 3D/EPI, flip, b-value,
+    # volumes, vendor private headers) by reading the original DICOM, so vendor
+    # names the regex misses (Philips sT1W_3D_TFE_IR, a BOLD called FE_EPI, …)
+    # are still placed. Best-effort: on any problem the name-based classifier
+    # (classify_series) takes over, so this never converts worse than before.
+    param_decisions = None
+    if os.environ.get("BIDS_PARAM_CLASSIFY", "1") != "0":
+        try:
+            from bids_classifier import classify_dicom_dir
+            param_decisions = classify_dicom_dir(dicom_dir)
+            full_log.append(f"-- acquisition-parameter classifier: {len(param_decisions)} "
+                            "series named by parameters (name-based fallback for the rest) --")
+        except Exception as e:                       # noqa: BLE001
+            log.warning("[%s] param classifier unavailable (%s) — name-based only", subj_id, e)
+            full_log.append(f"-- acquisition-parameter classifier unavailable ({e}); "
+                            "using the name-based classifier --")
+
     # 3. generate the config from the helper sidecars ─────────────────────────
     config_path = bids_out / "code" / "dcm2bids_config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     descriptions, kept_lines, skipped_lines = build_dcm2bids_config(
-        helper_dir, config_path, fallback_suffix)
+        helper_dir, config_path, fallback_suffix, param_decisions)
     full_log.append("-- generated dcm2bids config --------------------------------\n"
                     f"config: {config_path}\n" + "\n".join(kept_lines or ["  (none)"])
                     + (("\nomitted (junk/localizer/derived):\n" + "\n".join(skipped_lines))

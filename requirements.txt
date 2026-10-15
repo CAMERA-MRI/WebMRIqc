@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 python-multipart
 dcm2bids
+pydicom>=2.3
+nibabel

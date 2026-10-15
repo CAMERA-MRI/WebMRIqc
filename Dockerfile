@@ -21,11 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python packages ───────────────────────────────────────────────────────────
+# pydicom drives the acquisition-parameter BIDS classifier (bids_classifier/).
+# The floor is satisfied by the pydicom already in the MRIQC base, so this does
+# not upgrade it; nibabel (used for Siemens CSA) is already in the base too.
 RUN pip install --no-cache-dir \
         fastapi \
         "uvicorn[standard]" \
         python-multipart \
         dcm2bids \
+        "pydicom>=2.3" \
         httpx
 
 # ── App code ──────────────────────────────────────────────────────────────────
@@ -33,6 +37,9 @@ WORKDIR /webmriqc
 
 # Combined FastAPI server
 COPY server.py .
+
+# Acquisition-parameter BIDS classifier (vendored BIDS-Manager engine + adapter)
+COPY bids_classifier ./bids_classifier
 
 # Compiled React frontend from stage 1
 COPY --from=frontend /app/dist ./dist
