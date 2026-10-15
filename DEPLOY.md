@@ -48,6 +48,10 @@ PORT=8000
 # Number of uvicorn worker processes (default 2)
 # Only increase if you have ≥64 GB RAM — each worker can run one MRIQC job
 WORKERS=2
+
+# DICOM→BIDS classification: the acquisition-parameter classifier is ON by
+# default. Set to 0 to fall back to the name-based classifier only.
+BIDS_PARAM_CLASSIFY=1
 ```
 
 Then redeploy:
@@ -81,6 +85,10 @@ docker compose up -d --build        # rebuild and start
 git pull                 # or copy new files to the server
 ./deploy.sh --restart    # rebuilds the image and restarts
 ```
+
+> The image rebuild bundles the `bids_classifier/` acquisition-parameter classifier
+> and its `pydicom` dependency — no extra install step. It is on by default; set
+> `BIDS_PARAM_CLASSIFY=0` in `.env` to fall back to the name-based classifier.
 
 ---
 

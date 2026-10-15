@@ -84,33 +84,40 @@ hand-written mapping:
 2. **`dcm2bids_helper`** — run `dcm2niix` on every series to produce NIfTI + JSON sidecars
    for inspection.
 3. **`build_dcm2bids_config()`** — read those sidecars and *generate* a `dcm2bids` config
-   whose criteria match this subject's real series (see below).
+   whose criteria match this subject's real series, labelling each series by its
+   **acquisition parameters** (see below).
 4. **`dcm2bids`** — pick the matched files and place them in the BIDS tree.
 5. **Validate** — a non-blocking structural check (and the official `bids-validator` if
    installed) confirms a `dataset_description.json` and at least one image+sidecar pair.
 
 ### How series are selected and classified
 
-The heart of the pipeline is `classify_series()`, which decides the BIDS
-datatype/suffix/entities for each converted image. Key design choices:
+Each series is labelled by **how it was acquired**, not by how the operator named it.
 
-- **Metadata-first, name-second.** Classification reads the DICOM/NIfTI JSON
-  (`ImageType`, `MRAcquisitionType`, `InversionTime`, `EchoTime`, `PhaseEncodingDirection`,
-  b-values, number of volumes) *before* falling back to the series name — so it correctly
-  identifies vendor sequences like MPRAGE, BRAVO, SPACE, CUBE, FSPGR or TIRM, not just
-  literal `*T1*` strings.
-- **Underscore-safe matching.** Scanner names like `t2_tse_cor` defeat naive `\bt2\b`
-  word-boundary regexes (because `_` is a word character), so names are normalized —
-  non-alphanumerics collapse to spaces — before matching. This is what makes Siemens-style
-  underscore names classify reliably.
+- **Parameter-based classifier (default).** `bids_classifier/` reads the original DICOM
+  headers with `pydicom` and scores each series on its acquisition parameters —
+  echo / repetition / inversion times, 2D vs 3D, gradient- vs spin-echo, EPI readout, flip
+  angle, b-values and directions, volume count, and the Siemens / Philips / GE private
+  headers — against a weighted rulebook, then reads the session as a whole (an SBRef before
+  its run, a reversed-phase fieldmap, the two inversions of an MP2RAGE). This places vendor
+  sequences whose names give nothing away — e.g. a Philips `sT1W_3D_TFE_IR` as `anat/T1w`,
+  or a BOLD run exported as `FE_EPI` as `func/bold`, which a name rule would miss. The
+  scoring engine, feature extractor and rulebook are vendored verbatim from
+  **[BIDS-Manager](https://github.com/ANCPLabOldenburg/BIDS-Manager)** (MIT); WebMRIQC adds
+  only the thin DICOM-reading adapter. Set **`BIDS_PARAM_CLASSIFY=0`** to turn it off.
+- **Name-based fallback (`classify_series()`).** Wherever the parameters are inconclusive,
+  a metadata-first + name classifier decides instead — so the parameters lead and the names
+  are the safety net (it is never *worse* than name-only). It is underscore-safe
+  (`t2_tse_cor` is normalized before matching) and knows vendor aliases (MPRAGE, BRAVO,
+  SPACE, CUBE, FSPGR, TIRM…).
 - **Junk is dropped.** Localizers, scouts, screenshots, phoenix reports, and derived
   parametric maps (ADC, FA, CBF, TTP…) are recognized and omitted.
 - **One best image per anatomical modality.** When several same-modality series exist
   (e.g. a NORM and non-NORM copy of one MPRAGE, or repeats), `_series_rank()` keeps the
   single best one — preferring `ORIGINAL`/`PRIMARY` over `DERIVED`/`SECONDARY`, 3D and
-  prescan-normalized acquisitions, then the largest image. Functional, diffusion and
-  field-map acquisitions are legitimately distinct, so those are all kept and numbered
-  `run-1`, `run-2`, …
+  prescan-normalized acquisitions, then the largest image. Functional, diffusion, field-map
+  and multi-inversion / phase acquisitions are legitimately distinct, so those are all kept
+  (numbered `run-1`, `run-2`, … or separated by `inv-` / `part-`).
 - **Nothing is silently lost.** A real image that matches no standard modality (e.g. a
   de-identified, NIfTI-derived export) is rescued into `anat/<fallback>` rather than
   producing an empty dataset, so MRIQC always receives usable data.
@@ -237,6 +244,8 @@ All configuration is via environment variables (put them in a gitignored `.env`)
 | `WORKERS` | `16` | Uvicorn worker processes (HTTP concurrency). |
 | `MAX_CONCURRENT_JOBS` | `10` | MRIQC/conversion jobs running at once. |
 | `MAX_QUEUE_SIZE` | `100` | Max jobs waiting in the queue. |
+| `BIDS_PARAM_CLASSIFY` | `1` | Acquisition-parameter BIDS classifier (default on). Set `0` to fall back to the name-based classifier only. |
+| `BIDS_BACKEND` | `dcm2bids` | DICOM→BIDS backend: `dcm2bids` (default, with the parameter classifier) or `bidsmgr` (external BIDS-Manager CLI — needs it installed, located via `BIDSMGR_DIR` or `PATH`). |
 | `AUTH_SECRET` | *(required)* | HS256 signing secret. Set it so logins survive restarts — `openssl rand -hex 32`. |
 | `DATA_DIR` | `/data` | Where the accounts SQLite DB lives (persisted via named volume). |
 | `GEMINI_API_KEY` | – | Enables the AI support chatbot ([get a free key](https://aistudio.google.com/app/apikey)). |
@@ -307,6 +316,9 @@ It stands entirely on open-source neuroimaging tools:
   ecosystem (Apache-2.0) — the quality-control engine.
 - **[dcm2bids](https://unfmontreal.github.io/Dcm2Bids/)** and
   **[dcm2niix](https://github.com/rordenlab/dcm2niix)** — DICOM → BIDS conversion.
+- **[BIDS-Manager](https://github.com/ANCPLabOldenburg/BIDS-Manager)** (ANCP Lab Oldenburg,
+  MIT) — its acquisition-parameter classifier (scoring engine, feature extractor and
+  rulebook) is vendored in `bids_classifier/`; see `bids_classifier/LICENSE_bids-manager.txt`.
 - **[BIDS](https://bids.neuroimaging.io/)** — the dataset standard everything targets.
 
 Please cite MRIQC and BIDS in any work that uses this platform. Add a `LICENSE` file to
