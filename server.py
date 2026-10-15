@@ -647,6 +647,88 @@ def build_bids_from_dicom(dicom_dir: Path, bids_out: Path,
     return "\n\n".join(full_log)
 
 
+# ── Alternative backend: BIDS-Manager's acquisition-parameter classifier ──────
+# Enable with the env var BIDS_BACKEND=bidsmgr. Classifies each series from its
+# acquisition parameters (ScanningSequence, 3D/EPI, TE/TR/flip, b-value, volume
+# count, Siemens CSA …) rather than the series name, so vendor-specific names
+# (Philips sT1W_3D_TFE_IR, FE_EPI, …) are handled robustly. The bidsmgr-scan /
+# bidsmgr-convert executables are located via BIDSMGR_DIR (a venv's bin dir) or
+# the PATH; they run in their own environment via their shebang, so THIS process
+# does not need bids-manager (or its PyQt6 stack) installed.
+BIDSMGR_DIR = os.environ.get("BIDSMGR_DIR", "")
+
+
+def _bidsmgr_bin(name: str) -> str:
+    if BIDSMGR_DIR:
+        p = os.path.join(BIDSMGR_DIR, name)
+        if os.path.exists(p):
+            return p
+    return shutil.which(name) or name
+
+
+def build_bids_with_bidsmgr(dicom_dir: Path, bids_out: Path,
+                            subj_id: str, ses_id: str,
+                            fallback_suffix: str = "T1w") -> str:
+    """
+    DICOM→BIDS using BIDS-Manager instead of the regex + dcm2bids-config path:
+      1. bidsmgr-scan     — classify each series from acquisition parameters.
+      2. bidsmgr-convert  — dcm2niix driven by that inventory.
+    The result is then normalised into bids_out/sub-<subj_id>/ (bidsmgr's own
+    subject label is renamed) so the rest of the pipeline is unchanged. Raises
+    RuntimeError if no image lands, matching build_bids_from_dicom().
+    """
+    full_log = []
+    scan_bin = _bidsmgr_bin("bidsmgr-scan")
+    conv_bin = _bidsmgr_bin("bidsmgr-convert")
+    work = bids_out.parent / "bidsmgr_work"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    inv, parent = work / "inventory.tsv", work / "out"
+
+    # 1. scan → inventory TSV (the acquisition-parameter classification).
+    #    --dataset stamps a known slug so the output folder is deterministic.
+    rc, out = _run_cmd([scan_bin, str(dicom_dir), str(inv), "--dataset", "data"], "bidsmgr-scan")
+    full_log.append(out)
+    if rc != 0 or not inv.exists():
+        raise RuntimeError(f"bidsmgr-scan failed (exit {rc}):\n{out[-1500:]}")
+
+    # 2. convert → BIDS (dcm2niix per the inventory; no --dataset = convert all rows)
+    rc, out = _run_cmd([conv_bin, str(inv), str(parent)], "bidsmgr-convert")
+    full_log.append(out)
+    if rc != 0:
+        raise RuntimeError(f"bidsmgr-convert failed (exit {rc}):\n{out[-2000:]}")
+
+    # 3. find the produced BIDS root (parent/<dataset>/ holding sub-*)
+    src_root = next((c for c in sorted(parent.glob("*"))
+                     if c.is_dir() and any(c.glob("sub-*"))), None)
+    if src_root is None:
+        raise RuntimeError("bidsmgr-convert produced no BIDS subject:\n"
+                           + "\n".join(full_log)[-1500:])
+
+    # 4. normalise into bids_out/sub-<subj_id>/ (rename bidsmgr's subject label)
+    src_sub = sorted(src_root.glob("sub-*"))[0]
+    old, new = src_sub.name, f"sub-{subj_id}"
+    dst_sub = bids_out / new
+    shutil.rmtree(dst_sub, ignore_errors=True)
+    shutil.copytree(src_sub, dst_sub)
+    for p in sorted(dst_sub.rglob("*"), reverse=True):
+        if p.is_file() and old in p.name:
+            p.rename(p.with_name(p.name.replace(old, new)))
+
+    # 5. our standard top-level BIDS files + non-blocking validation
+    create_bids_top_level_files(bids_out, subj_id)
+    images = list(dst_sub.rglob("*.nii.gz"))
+    if not images:
+        raise RuntimeError("bidsmgr conversion placed no usable images:\n"
+                           + "\n".join(full_log)[-1500:])
+    full_log.append(_validate_bids(bids_out, subj_id))
+    full_log.append(f"RESULT: {len(images)} image(s) in sub-{subj_id} "
+                    f"— ready for MRIQC (BIDS-Manager backend)")
+    shutil.rmtree(work, ignore_errors=True)
+    log.info("BIDS-Manager conversion complete: %d image(s) for sub-%s", len(images), subj_id)
+    return "\n\n".join(full_log)
+
+
 def create_bids_top_level_files(bids_dir: Path, subject_id: str):
     # Always (over)write dataset_description — dcm2bids_scaffold ships one with an
     # empty Name and a single blank author, which the BIDS validator flags.
@@ -838,10 +920,15 @@ async def convert_dicom(
             # ── Convert ──────────────────────────────────────────────────────
             bids_out = work_dir / "bids"
             bids_out.mkdir(parents=True, exist_ok=True)
-            log.info("[%s] Converting DICOM→BIDS via dcm2bids (binary=%s) …", job_id, DCM2BIDS_BIN)
+            backend = os.environ.get("BIDS_BACKEND", "dcm2bids").strip().lower()
+            log.info("[%s] Converting DICOM→BIDS via %s …", job_id, backend)
             try:
-                conv_log = build_bids_from_dicom(dicom_dir, bids_out, participant_label,
-                                                 session_id, fallback_suffix=fallback_suffix)
+                if backend == "bidsmgr":
+                    conv_log = build_bids_with_bidsmgr(dicom_dir, bids_out, participant_label,
+                                                       session_id, fallback_suffix=fallback_suffix)
+                else:
+                    conv_log = build_bids_from_dicom(dicom_dir, bids_out, participant_label,
+                                                     session_id, fallback_suffix=fallback_suffix)
             except FileNotFoundError:
                 msg = (
                     f"dcm2bids toolchain not found (searched PATH={os.environ.get('PATH','')!r}). "
