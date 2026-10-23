@@ -41,6 +41,9 @@ COPY server.py .
 # Acquisition-parameter BIDS classifier (vendored BIDS-Manager engine + adapter)
 COPY bids_classifier ./bids_classifier
 
+# IQM export utility (reads /data/webmriqc.db → CSV; run via `docker compose exec`)
+COPY export_iqms.py .
+
 # Compiled React frontend from stage 1
 COPY --from=frontend /app/dist ./dist
 
