@@ -307,12 +307,16 @@ self-hosted HTTPS setup without Cloudflare, uncomment the `nginx` service in
 
 ## Credits & license
 
-WebMRIQC is developed by the **MAILAB** team — Philip Nkwam, Udunna Anazodo,
-Maruf Adewole and Sekinat Aderibigbe.
+**Acknowledgement**
+
+WebMRIQC is developed and maintained by the **Medical Artificial Intelligence Lab (MAI Lab)**
+and **The Multimodal Imaging of Neurodegenerative Diseases (MiND) Lab**, Montreal Neurological
+Institute, through the contribution of Philip Nkwam, Ifeoluwa Oladeji, Maruf Adewole,
+Sekinat Aderibigbe, Jasmine Cakmak, Tolulope Olusuyi, and Udunna Anazodo.
 
 It stands entirely on open-source neuroimaging tools:
 
-- **[MRIQC](https://mriqc.readthedocs.io)** and the **[nipreps](https://www.nipreps.org)**
+- **[MRIQC](https://mriqc.readthedocs.io/)** and the **[nipreps](https://www.nipreps.org/)**
   ecosystem (Apache-2.0) — the quality-control engine.
 - **[dcm2bids](https://unfmontreal.github.io/Dcm2Bids/)** and
   **[dcm2niix](https://github.com/rordenlab/dcm2niix)** — DICOM → BIDS conversion.
@@ -321,5 +325,16 @@ It stands entirely on open-source neuroimaging tools:
   rulebook) is vendored in `bids_classifier/`; see `bids_classifier/LICENSE_bids-manager.txt`.
 - **[BIDS](https://bids.neuroimaging.io/)** — the dataset standard everything targets.
 
-Please cite MRIQC and BIDS in any work that uses this platform. Add a `LICENSE` file to
-declare the terms for the WebMRIQC application code itself.
+### License
+
+Copyright (c) 2026, MAI Lab
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file
+except in compliance with the License. You may obtain a copy of the License at
+
+> <http://www.apache.org/licenses/LICENSE-2.0>
+
+Unless required by applicable law or agreed to in writing, software distributed under the
+License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+either express or implied. See the License for the specific language governing permissions
+and limitations under the License.
